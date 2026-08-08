@@ -430,35 +430,72 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       const allCategories = await db.categories.toArray();
       const catByName = new Map(allCategories.map((c) => [c.name.toLowerCase(), c]));
 
-      const items: ScheduledItem[] = validRows.map((row) => {
-        const account = row.accountName
-          ? accountByName.get(row.accountName.toLowerCase()) ?? defaultAccount
-          : defaultAccount;
-        const category = row.categoryName
-          ? catByName.get(row.categoryName.toLowerCase())
-          : undefined;
+      const items: ScheduledItem[] = [];
+      const rowErrors: string[] = [];
 
-        return {
-          id: crypto.randomUUID(),
-          accountId: account.id,
-          type: row.type,
-          amount: row.amount,
-          description: row.description,
-          categoryId: category?.id ?? undefined,
-          recurrence: row.recurrence,
-          startDate: new Date(row.dateStr + 'T12:00:00'),
-          endDate: null,
-          isActive: true,
-          lastProcessedDate: null,
-          createdAt: now,
-          updatedAt: now,
-        };
-      });
+      for (const row of validRows) {
+        try {
+          const account = row.accountName
+            ? accountByName.get(row.accountName.toLowerCase()) ?? defaultAccount
+            : defaultAccount;
+          const category = row.categoryName
+            ? catByName.get(row.categoryName.toLowerCase())
+            : undefined;
+
+          // Validate date
+          const parsedDate = new Date(row.dateStr + 'T12:00:00');
+          if (isNaN(parsedDate.getTime())) {
+            rowErrors.push(`"${row.description}": invalid date "${row.dateStr}"`);
+            continue;
+          }
+
+          // Generate ID safely
+          let id: string;
+          try {
+            id = crypto.randomUUID();
+          } catch {
+            id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          }
+
+          items.push({
+            id,
+            accountId: account.id,
+            type: row.type,
+            amount: row.amount,
+            description: row.description,
+            categoryId: category?.id ?? undefined,
+            recurrence: row.recurrence,
+            startDate: parsedDate,
+            endDate: null,
+            isActive: true,
+            lastProcessedDate: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+        } catch (rowErr) {
+          rowErrors.push(`"${row.description}": ${rowErr instanceof Error ? rowErr.message : 'unknown error'}`);
+        }
+      }
+
+      if (items.length === 0) {
+        throw new Error(`No items could be imported. ${rowErrors.join('; ')}`);
+      }
 
       await db.scheduledItems.bulkAdd(items);
-      setRestoreMsg(`Imported ${items.length} scheduled items`);
-      await refresh();
-      setTimeout(() => setRestoreMsg(null), 3000);
+
+      if (rowErrors.length > 0) {
+        setRestoreMsg(`Imported ${items.length} items (${rowErrors.length} skipped: ${rowErrors.join('; ')})`);
+      } else {
+        setRestoreMsg(`Imported ${items.length} scheduled items`);
+      }
+
+      try {
+        await refresh();
+      } catch {
+        // refresh failed but data is saved — not critical
+      }
+
+      setTimeout(() => setRestoreMsg(null), 5000);
 
       // Reset paste state
       setShowPasteImport(false);
