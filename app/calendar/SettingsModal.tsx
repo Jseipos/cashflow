@@ -798,7 +798,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                     onChange={(e) => setPasteText(e.target.value)}
                     placeholder="Date,Description,Type,Amount,Account,Category,Recurrence&#10;2024-01-15,Rent,expense,1500.00,Checking,,monthly&#10;2024-01-20,Paycheck,income,3000.00,Checking,,biweekly"
                     rows={6}
-                    className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm font-mono outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 resize-y"
+                    className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm font-mono text-gray-900 bg-white outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 resize-y placeholder:text-gray-400"
                     autoFocus
                   />
                 </div>
@@ -821,7 +821,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   </button>
                 </div>
 
-                <div className="text-xs text-gray-400 space-y-1">
+                <div className="text-xs text-gray-600 space-y-1">
                   <p><strong>Columns:</strong> Date, Description, Type, Amount, Account, Category, Recurrence</p>
                   <p>Type &amp; Category are optional (default: expense / none). Amount in dollars.</p>
                   <p>Auto-detects: commas, tabs, or semicolons. Handles quoted fields.</p>
@@ -859,7 +859,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                         )}
                       </div>
                       {row.valid && (
-                        <div className="text-xs text-gray-500 mt-0.5">
+                        <div className="text-xs text-gray-700 mt-0.5">
                           {row.dateStr} • ${(row.amount / 100).toFixed(2)} • {row.type} • {row.recurrence}
                           {row.accountName ? ` • ${row.accountName}` : ''}
                         </div>
@@ -1119,7 +1119,14 @@ function parseScheduledCSV(text: string): PastePreviewRow[] {
 
     const type = (['income', 'expense', 'transfer'].includes(typeRaw.toLowerCase()) ? typeRaw.toLowerCase() : 'expense') as 'income' | 'expense' | 'transfer';
     const amount = dollarsToCents(amountRaw, NaN);
-    const recurrence = (['once', 'weekly', 'biweekly', 'monthly'].includes(recurrenceRaw.toLowerCase()) ? recurrenceRaw.toLowerCase() : 'once') as ScheduledItem['recurrence'];
+    const recurrenceClean = recurrenceRaw.toLowerCase().replace(/[^a-z]/g, '');
+    const recurrenceMap: Record<string, ScheduledItem['recurrence']> = {
+      'once': 'once', 'onetime': 'once', 'one': 'once',
+      'weekly': 'weekly', 'week': 'weekly', 'everyweek': 'weekly',
+      'biweekly': 'biweekly', 'biweek': 'biweekly', 'everyotherweek': 'biweekly', 'every2weeks': 'biweekly', 'twoweeks': 'biweekly',
+      'monthly': 'monthly', 'month': 'monthly', 'everymonth': 'monthly',
+    };
+    const recurrence = recurrenceMap[recurrenceClean] ?? 'once';
 
     let error: string | undefined;
     if (!dateStr) error = 'Missing date';
