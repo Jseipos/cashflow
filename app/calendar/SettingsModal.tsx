@@ -320,7 +320,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     URL.revokeObjectURL(url);
   }, []);
 
-  // ---- Restore from Backup ----
+  // ---- Restore from Backup (JSON or CSV) ----
   const handleRestore = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -331,70 +331,140 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
     try {
       const text = await file.text();
-      const data = JSON.parse(text);
+      const isCSV = file.name.endsWith('.csv') || file.type === 'text/csv';
 
-      // Validate structure
-      if (!data.accounts || !Array.isArray(data.accounts)) {
-        throw new Error('Invalid backup file: missing accounts array');
-      }
+      if (isCSV) {
+        // ---- CSV Import: scheduled items only ----
+        const lines = text.split('\n').filter((l) => l.trim());
+        if (lines.length < 2) throw new Error('CSV file is empty or has no data rows');
 
-      const db = getDB();
+        const headers = lines[0].split(',').map((h) => h.trim().toLowerCase().replace(/"/g, ''));
+        const dateIdx = headers.indexOf('date');
+        const descIdx = headers.indexOf('description');
+        const typeIdx = headers.indexOf('type');
+        const amountIdx = headers.indexOf('amount');
+        const accountIdx = headers.indexOf('account');
+        const categoryIdx = headers.indexOf('category');
+        const recurrenceIdx = headers.indexOf('recurrence');
 
-      // Clear existing data
-      await Promise.all([
-        db.accounts.clear(),
-        db.scheduledItems.clear(),
-        db.creditCards.clear(),
-        db.wishlistItems.clear(),
-        db.categories.clear(),
-      ]);
-
-      // Restore dates from strings
-      const parseDates = (obj: Record<string, unknown>, fields: string[]) => {
-        for (const f of fields) {
-          if (obj[f] && typeof obj[f] === 'string') {
-            obj[f] = new Date(obj[f] as string);
-          }
+        if (dateIdx === -1 || descIdx === -1 || amountIdx === -1) {
+          throw new Error('CSV must have Date, Description, and Amount columns');
         }
-        return obj;
-      };
 
-      const dateFields = ['createdAt', 'updatedAt', 'startDate', 'endDate', 'lastProcessedDate', 'targetDate'];
+        const db = getDB();
+        const allAccounts = await db.accounts.toArray();
+        const defaultAccount = allAccounts[0];
+        if (!defaultAccount) throw new Error('No account found — create one first');
 
-      // Import data
-      if (data.accounts?.length) {
-        await db.accounts.bulkAdd(data.accounts.map((a: Record<string, unknown>) => parseDates(a, dateFields)));
-      }
-      if (data.scheduledItems?.length) {
-        await db.scheduledItems.bulkAdd(data.scheduledItems.map((i: Record<string, unknown>) => parseDates(i, dateFields)));
-      }
-      if (data.creditCards?.length) {
-        await db.creditCards.bulkAdd(data.creditCards.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
-      }
-      if (data.wishlistItems?.length) {
-        await db.wishlistItems.bulkAdd(data.wishlistItems.map((w: Record<string, unknown>) => parseDates(w, dateFields)));
-      }
-      if (data.categories?.length) {
-        await db.categories.bulkAdd(data.categories.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
-      }
+        // Build account lookup by name
+        const accountByName = new Map(allAccounts.map((a) => [a.name.toLowerCase(), a]));
+        const allCategories = await db.categories.toArray();
+        const catByName = new Map(allCategories.map((c) => [c.name.toLowerCase(), c]));
 
-      const counts = [
-        data.accounts?.length ? `${data.accounts.length} accounts` : null,
-        data.scheduledItems?.length ? `${data.scheduledItems.length} items` : null,
-        data.creditCards?.length ? `${data.creditCards.length} cards` : null,
-        data.wishlistItems?.length ? `${data.wishlistItems.length} wishlist` : null,
-        data.categories?.length ? `${data.categories.length} categories` : null,
-      ].filter(Boolean).join(', ');
+        const now = new Date();
+        const items: ScheduledItem[] = [];
 
-      setRestoreMsg(`Restored: ${counts}`);
+        for (let i = 1; i < lines.length; i++) {
+          const cols = parseCSVLine(lines[i]);
+          if (cols.length < 3) continue;
 
-      // Reload the page to refresh all contexts
-      setTimeout(() => window.location.reload(), 1500);
+          const dateStr = cols[dateIdx]?.trim();
+          const desc = cols[descIdx]?.trim();
+          const type = (typeIdx >= 0 ? cols[typeIdx]?.trim().toLowerCase() : 'expense') as 'income' | 'expense' | 'transfer';
+          const amount = Math.round(parseFloat(cols[amountIdx]?.replace(/[$,]/g, '') || '0') * 100);
+          const accountName = accountIdx >= 0 ? cols[accountIdx]?.trim().toLowerCase() : '';
+          const catName = categoryIdx >= 0 ? cols[categoryIdx]?.trim().toLowerCase() : '';
+          const recurrence = (recurrenceIdx >= 0 ? cols[recurrenceIdx]?.trim().toLowerCase() : 'once') as ScheduledItem['recurrence'];
+
+          if (!dateStr || !desc || isNaN(amount)) continue;
+
+          const account = accountByName.get(accountName) ?? defaultAccount;
+          const category = catName ? catByName.get(catName) : undefined;
+
+          items.push({
+            id: crypto.randomUUID(),
+            accountId: account.id,
+            type: ['income', 'expense', 'transfer'].includes(type) ? type : 'expense',
+            amount,
+            description: desc,
+            categoryId: category?.id ?? undefined,
+            recurrence: ['once', 'weekly', 'biweekly', 'monthly'].includes(recurrence) ? recurrence : 'once',
+            startDate: new Date(dateStr + 'T12:00:00'),
+            endDate: null,
+            isActive: true,
+            lastProcessedDate: null,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+
+        if (items.length === 0) throw new Error('No valid rows found in CSV');
+
+        await db.scheduledItems.bulkAdd(items);
+        setRestoreMsg(`Imported ${items.length} scheduled items from CSV`);
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        // ---- JSON Import: full backup ----
+        const data = JSON.parse(text);
+
+        if (!data.accounts || !Array.isArray(data.accounts)) {
+          throw new Error('Invalid backup file: missing accounts array');
+        }
+
+        const db = getDB();
+
+        // Clear existing data
+        await Promise.all([
+          db.accounts.clear(),
+          db.scheduledItems.clear(),
+          db.creditCards.clear(),
+          db.wishlistItems.clear(),
+          db.categories.clear(),
+        ]);
+
+        // Restore dates from strings
+        const parseDates = (obj: Record<string, unknown>, fields: string[]) => {
+          for (const f of fields) {
+            if (obj[f] && typeof obj[f] === 'string') {
+              obj[f] = new Date(obj[f] as string);
+            }
+          }
+          return obj;
+        };
+
+        const dateFields = ['createdAt', 'updatedAt', 'startDate', 'endDate', 'lastProcessedDate', 'targetDate'];
+
+        if (data.accounts?.length) {
+          await db.accounts.bulkAdd(data.accounts.map((a: Record<string, unknown>) => parseDates(a, dateFields)));
+        }
+        if (data.scheduledItems?.length) {
+          await db.scheduledItems.bulkAdd(data.scheduledItems.map((i: Record<string, unknown>) => parseDates(i, dateFields)));
+        }
+        if (data.creditCards?.length) {
+          await db.creditCards.bulkAdd(data.creditCards.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
+        }
+        if (data.wishlistItems?.length) {
+          await db.wishlistItems.bulkAdd(data.wishlistItems.map((w: Record<string, unknown>) => parseDates(w, dateFields)));
+        }
+        if (data.categories?.length) {
+          await db.categories.bulkAdd(data.categories.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
+        }
+
+        const counts = [
+          data.accounts?.length ? `${data.accounts.length} accounts` : null,
+          data.scheduledItems?.length ? `${data.scheduledItems.length} items` : null,
+          data.creditCards?.length ? `${data.creditCards.length} cards` : null,
+          data.wishlistItems?.length ? `${data.wishlistItems.length} wishlist` : null,
+          data.categories?.length ? `${data.categories.length} categories` : null,
+        ].filter(Boolean).join(', ');
+
+        setRestoreMsg(`Restored: ${counts}`);
+        setTimeout(() => window.location.reload(), 1500);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Restore failed — invalid file');
+      setError(err instanceof Error ? err.message : 'Import failed — invalid file');
     } finally {
       setRestoring(false);
-      // Reset file input
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }, []);
@@ -670,7 +740,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".json"
+                accept=".json,.csv"
                 onChange={handleRestore}
                 className="hidden"
                 id="restore-file-input"
@@ -680,10 +750,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 disabled={restoring}
                 className="w-full px-4 py-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 font-medium text-sm hover:bg-amber-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                {restoring ? 'Restoring...' : '📥 Import / Restore from File'}
+                {restoring ? 'Importing...' : '📥 Import / Restore (JSON or CSV)'}
               </button>
               <p className="text-xs text-amber-600 text-center">
-                ⚠️ This replaces ALL current data on this device
+                ⚠️ JSON replaces all data. CSV adds items only.
               </p>
 
               {restoreMsg && (
@@ -851,4 +921,29 @@ function formatCSVDate(date: Date): string {
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++; // skip escaped quote
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current);
+  return result;
 }
