@@ -104,9 +104,11 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
         await addCard(card);
       }
 
-      // Sync minimum payment to calendar
+      // Sync minimum payment to calendar — but ONLY if no payoff plan exists
+      // If a payoff plan is active, it owns the calendar for card payments
+      const hasPayoffPlan = scheduledItems.some((i) => i.sourceType === 'payoff');
       const paymentAccount = accounts.find((a) => a.id === paymentAccountId) ?? selectedAccount;
-      if (paymentAccount) {
+      if (paymentAccount && !hasPayoffPlan) {
         // Remove old scheduled item for this card if editing
         if (editCard) {
           const oldItem = scheduledItems.find(
