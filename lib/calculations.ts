@@ -133,6 +133,9 @@ export function projectBalances(
   }
 
   // Walk day by day, computing running balance
+  // Past-dated items are shown on the calendar but do NOT affect the balance,
+  // because the current balance already reflects everything that happened before today.
+  const today = startOfDay(new Date());
   const result: DayBalance[] = [];
   let runningBalance = account.currentBalance;
 
@@ -140,16 +143,19 @@ export function projectBalances(
     const date = addDays(start, i);
     const key = date.toDateString();
     const dayItems = byDay.get(key) ?? [];
+    const isPast = isBefore(date, today);
 
-    // Apply each item
-    for (const item of dayItems) {
-      if (item.type === 'income') {
-        runningBalance += item.amount;
-      } else if (item.type === 'expense') {
-        runningBalance -= item.amount;
-      } else if (item.type === 'transfer') {
-        // Transfer out from this account
-        runningBalance -= item.amount;
+    // Apply each item (skip balance changes for past dates)
+    if (!isPast) {
+      for (const item of dayItems) {
+        if (item.type === 'income') {
+          runningBalance += item.amount;
+        } else if (item.type === 'expense') {
+          runningBalance -= item.amount;
+        } else if (item.type === 'transfer') {
+          // Transfer out from this account
+          runningBalance -= item.amount;
+        }
       }
     }
 
