@@ -994,7 +994,7 @@ function AccountForm({ editingAccount, onSave, onCancel }: AccountFormProps) {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. Main Checking"
-          className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm outline-none focus:border-blue-500"
+          className="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-900 bg-white outline-none focus:border-blue-500 placeholder:text-gray-400"
           autoFocus
         />
       </div>
@@ -1029,7 +1029,7 @@ function AccountForm({ editingAccount, onSave, onCancel }: AccountFormProps) {
               step="0.01"
               value={balance}
               onChange={(e) => setBalance(e.target.value)}
-              className="w-full pl-7 pr-3 py-2 rounded-lg border border-gray-300 text-sm outline-none focus:border-blue-500"
+              className="w-full pl-7 pr-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-900 bg-white outline-none focus:border-blue-500"
             />
           </div>
         </div>
@@ -1043,7 +1043,7 @@ function AccountForm({ editingAccount, onSave, onCancel }: AccountFormProps) {
               step="0.01"
               value={threshold}
               onChange={(e) => setThreshold(e.target.value)}
-              className="w-full pl-7 pr-3 py-2 rounded-lg border border-gray-300 text-sm outline-none focus:border-blue-500"
+              className="w-full pl-7 pr-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-900 bg-white outline-none focus:border-blue-500"
             />
           </div>
         </div>
