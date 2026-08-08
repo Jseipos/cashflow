@@ -404,13 +404,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   }, []);
 
   // ---- Paste CSV Import: scheduled items only ----
-  const handleParsePaste = useCallback(() => {
+  const handleParsePaste = () => {
     const parsed = parseScheduledCSV(pasteText);
     setPastePreview(parsed);
     setPasteStep('preview');
-  }, [pasteText]);
+  };
 
-  const handleImportPaste = useCallback(async () => {
+  const handleImportPaste = async () => {
     const validRows = pastePreview.filter((r) => r.valid);
     if (validRows.length === 0) return;
 
@@ -507,14 +507,14 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     } finally {
       setImportingCsv(false);
     }
-  }, [pastePreview, refresh]);
+  };
 
-  const handleClosePasteImport = useCallback(() => {
+  const handleClosePasteImport = () => {
     setShowPasteImport(false);
     setPasteText('');
     setPastePreview([]);
     setPasteStep('input');
-  }, []);
+  };
 
   if (!open) return null;
 
