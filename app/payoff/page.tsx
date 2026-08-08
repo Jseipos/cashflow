@@ -25,6 +25,22 @@ function PayoffPageInner() {
   const [showComparison, setShowComparison] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applied, setApplied] = useState(false);
+  const [planStartDate, setPlanStartDate] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('payoff-start-date') ?? '';
+  });
+
+  // Check if a payoff plan is currently active on the calendar
+  const planIsActive = scheduledItems.some((i) => i.sourceType === 'payoff');
+
+  // Save start date to localStorage
+  useEffect(() => {
+    if (planStartDate) {
+      localStorage.setItem('payoff-start-date', planStartDate);
+    } else {
+      localStorage.removeItem('payoff-start-date');
+    }
+  }, [planStartDate]);
 
   // Save settings to localStorage whenever they change
   useEffect(() => {
@@ -67,6 +83,9 @@ function PayoffPageInner() {
         await deleteScheduledItem(item.id);
       }
 
+      // Determine start date — use custom date if set, otherwise next due date
+      const customStart = planStartDate ? new Date(planStartDate + 'T12:00:00') : null;
+
       // Create new payoff scheduled items
       const now = new Date();
       for (const cardResult of result.cards) {
@@ -81,6 +100,11 @@ function PayoffPageInner() {
         // Use the card's paymentAccountId if set, otherwise selected account
         const targetAccountId = card.paymentAccountId ?? selectedAccount.id;
 
+        // Use custom start date if provided, otherwise next due date
+        const itemStartDate = customStart && !isNaN(customStart.getTime())
+          ? customStart
+          : getNextDueDate(card.dueDate);
+
         await addScheduledItem({
           id: crypto.randomUUID(),
           accountId: targetAccountId,
@@ -88,7 +112,7 @@ function PayoffPageInner() {
           amount: totalPayment,
           description: `${card.name} payoff payment`,
           recurrence: 'monthly',
-          startDate: getNextDueDate(card.dueDate),
+          startDate: itemStartDate,
           endDate: cardResult.payoffDate,
           isActive: true,
           lastProcessedDate: null,
@@ -101,6 +125,43 @@ function PayoffPageInner() {
 
       setApplied(true);
       setTimeout(() => setApplied(false), 3000);
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const handleDisablePlan = async () => {
+    if (!selectedAccount) return;
+    setApplying(true);
+
+    try {
+      // Remove all payoff items
+      const payoffItems = scheduledItems.filter((i) => i.sourceType === 'payoff');
+      for (const item of payoffItems) {
+        await deleteScheduledItem(item.id);
+      }
+
+      // Restore min payment items for each active card
+      const now = new Date();
+      for (const card of activeCards) {
+        const targetAccountId = card.paymentAccountId ?? selectedAccount.id;
+        await addScheduledItem({
+          id: crypto.randomUUID(),
+          accountId: targetAccountId,
+          type: 'expense',
+          amount: card.minimumPayment,
+          description: `${card.name} min payment`,
+          recurrence: 'monthly',
+          startDate: getNextDueDate(card.dueDate),
+          endDate: null,
+          isActive: true,
+          lastProcessedDate: null,
+          sourceId: card.id,
+          sourceType: 'card',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
     } finally {
       setApplying(false);
     }
@@ -292,21 +353,65 @@ function PayoffPageInner() {
                   ))}
                 </div>
 
-                {/* Apply plan button */}
-                <button
-                  onClick={handleApplyPlan}
-                  disabled={applying}
-                  className={`w-full px-4 py-3.5 rounded-xl font-semibold text-white transition-colors ${
-                    applied
-                      ? 'bg-green-600'
-                      : 'bg-blue-600 hover:bg-blue-700'
-                  } disabled:opacity-50`}
-                >
-                  {applying ? 'Applying...' : applied ? '✓ Plan Applied to Calendar' : 'Apply Plan to Calendar'}
-                </button>
-                <p className="text-xs text-gray-400 text-center">
-                  This creates recurring payment items on your calendar for each card.
-                </p>
+                {/* Start date picker */}
+                <div className="bg-white rounded-xl border border-gray-200 p-4">
+                  <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">
+                    Plan Start Date <span className="text-gray-400 normal-case">(optional)</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={planStartDate}
+                    onChange={(e) => setPlanStartDate(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-lg border border-gray-300 text-sm text-gray-900 bg-white outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                  />
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    Leave blank to start on each card's next due date. Set a future date to delay the plan (e.g., save cash for a house first).
+                  </p>
+                </div>
+
+                {/* Apply / Disable plan buttons */}
+                {planIsActive ? (
+                  <>
+                    <button
+                      onClick={handleApplyPlan}
+                      disabled={applying}
+                      className={`w-full px-4 py-3.5 rounded-xl font-semibold text-white transition-colors ${
+                        applied
+                          ? 'bg-green-600'
+                          : 'bg-blue-600 hover:bg-blue-700'
+                      } disabled:opacity-50`}
+                    >
+                      {applying ? 'Updating...' : applied ? '✓ Plan Updated' : 'Update Plan on Calendar'}
+                    </button>
+                    <button
+                      onClick={handleDisablePlan}
+                      disabled={applying}
+                      className="w-full px-4 py-3.5 rounded-xl font-semibold text-red-600 border border-red-300 bg-red-50 hover:bg-red-100 transition-colors disabled:opacity-50"
+                    >
+                      {applying ? 'Removing...' : 'Disable Payoff Plan'}
+                    </button>
+                    <p className="text-xs text-gray-500 text-center">
+                      Disabling removes payoff items and restores minimum payments.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={handleApplyPlan}
+                      disabled={applying}
+                      className={`w-full px-4 py-3.5 rounded-xl font-semibold text-white transition-colors ${
+                        applied
+                          ? 'bg-green-600'
+                          : 'bg-blue-600 hover:bg-blue-700'
+                      } disabled:opacity-50`}
+                    >
+                      {applying ? 'Applying...' : applied ? '✓ Plan Applied to Calendar' : 'Apply Plan to Calendar'}
+                    </button>
+                    <p className="text-xs text-gray-500 text-center">
+                      This replaces min payments with payoff plan payments on your calendar.
+                    </p>
+                  </>
+                )}
               </>
             )}
           </>
