@@ -52,8 +52,9 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
       setDueDate('15');
       setColor(CARD_COLORS[Math.floor(Math.random() * CARD_COLORS.length)]);
     }
-    // Default payment account to selected account or first available
-    const defaultAcct = selectedAccount?.id ?? accounts[0]?.id ?? '';
+    // Restore saved payment account, or default to selected/first account
+    const savedAcct = editCard?.paymentAccountId;
+    const defaultAcct = savedAcct ?? selectedAccount?.id ?? accounts[0]?.id ?? '';
     setPaymentAccountId(defaultAcct);
     setError(null);
   }, [open, editCard, selectedAccount, accounts]);
@@ -91,6 +92,7 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
         statementDate: stmtDay,
         dueDate: dueDay,
         color,
+        paymentAccountId: paymentAccountId || undefined,
         isActive: editCard?.isActive ?? true,
         createdAt: editCard?.createdAt ?? now,
         updatedAt: now,

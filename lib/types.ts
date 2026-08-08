@@ -77,6 +77,7 @@ export interface CreditCard {
   statementDate: number; // day of month (1-31)
   dueDate: number; // day of month (1-31)
   color: string;
+  paymentAccountId?: string; // which account payments withdraw from
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
