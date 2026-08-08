@@ -368,13 +368,16 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           const cols = parseCSVLine(lines[i]);
           if (cols.length < 3) continue;
 
-          const dateStr = cols[dateIdx]?.trim();
-          const desc = cols[descIdx]?.trim();
-          const type = (typeIdx >= 0 ? cols[typeIdx]?.trim().toLowerCase() : 'expense') as 'income' | 'expense' | 'transfer';
-          const amount = Math.round(parseFloat(cols[amountIdx]?.replace(/[$,]/g, '') || '0') * 100);
-          const accountName = accountIdx >= 0 ? cols[accountIdx]?.trim().toLowerCase() : '';
-          const catName = categoryIdx >= 0 ? cols[categoryIdx]?.trim().toLowerCase() : '';
-          const recurrence = (recurrenceIdx >= 0 ? cols[recurrenceIdx]?.trim().toLowerCase() : 'once') as ScheduledItem['recurrence'];
+          const safeCell = (idx: number) => (cols[idx] ?? '').trim();
+          const safeLower = (idx: number) => safeCell(idx).toLowerCase();
+
+          const dateStr = safeCell(dateIdx);
+          const desc = safeCell(descIdx);
+          const type = (typeIdx >= 0 ? safeLower(typeIdx) : 'expense') as 'income' | 'expense' | 'transfer';
+          const amount = Math.round(parseFloat(safeCell(amountIdx).replace(/[$,]/g, '') || '0') * 100);
+          const accountName = accountIdx >= 0 ? safeLower(accountIdx) : '';
+          const catName = categoryIdx >= 0 ? safeLower(categoryIdx) : '';
+          const recurrence = (recurrenceIdx >= 0 ? safeLower(recurrenceIdx) : 'once') as ScheduledItem['recurrence'];
 
           if (!dateStr || !desc || isNaN(amount)) continue;
 
