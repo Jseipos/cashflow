@@ -442,10 +442,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             ? catByName.get(row.categoryName.toLowerCase())
             : undefined;
 
-          // Validate date
-          const parsedDate = new Date(row.dateStr + 'T12:00:00');
-          if (isNaN(parsedDate.getTime())) {
-            rowErrors.push(`"${row.description}": invalid date "${row.dateStr}"`);
+          // Validate date — accept multiple formats
+          const parsedDate = parseFlexibleDate(row.dateStr);
+          if (!parsedDate) {
+            rowErrors.push(`"${row.description}": invalid date "${row.dateStr}" (use M/D/YYYY or YYYY-MM-DD)`);
             continue;
           }
 
@@ -932,6 +932,39 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 }
 
 // ---- CSV Export Helpers ----
+
+/** Parse flexible date formats: M/D/YYYY, MM/DD/YYYY, YYYY-MM-DD, M-D-YYYY, etc. */
+function parseFlexibleDate(dateStr: string): Date | null {
+  if (!dateStr) return null;
+  const s = dateStr.trim();
+
+  // Try ISO format first (YYYY-MM-DD)
+  if (/^\d{4}-\d{1,2}-\d{1,2}/.test(s)) {
+    const d = new Date(s.split('T')[0] + 'T12:00:00');
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // Try M/D/YYYY or M-D-YYYY or M.D.YYYY
+  const mdyMatch = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (mdyMatch) {
+    const [, month, day, year] = mdyMatch;
+    const d = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), 12, 0, 0);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // Try MM/DD/YY (two-digit year)
+  const mdyShort = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2})$/);
+  if (mdyShort) {
+    const [, month, day, year] = mdyShort;
+    const fullYear = parseInt(year) < 50 ? 2000 + parseInt(year) : 1900 + parseInt(year);
+    const d = new Date(fullYear, parseInt(month) - 1, parseInt(day), 12, 0, 0);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // Last resort: try native Date parsing
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
 
 function escapeCSV(value: string): string {
   if (value.includes(',') || value.includes('"') || value.includes('\n')) {
