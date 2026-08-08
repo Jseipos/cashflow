@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { AppProviders, useCards, useCashflow } from '@/lib/context';
 import { calculatePayoff, compareStrategies } from '@/lib/payoff';
 import { formatCurrency } from '@/lib/calculations';
@@ -11,11 +11,29 @@ function PayoffPageInner() {
   const { cards, loading } = useCards();
   const { selectedAccount, addScheduledItem, deleteScheduledItem, scheduledItems } = useCashflow();
 
-  const [extraPayment, setExtraPayment] = useState(0); // dollars
-  const [strategy, setStrategy] = useState<'avalanche' | 'snowball'>('avalanche');
+  // Persist payoff settings to localStorage so they survive page navigation
+  const [extraPayment, setExtraPayment] = useState(() => {
+    if (typeof window === 'undefined') return 0;
+    const saved = localStorage.getItem('payoff-extra-payment');
+    return saved ? Number(saved) : 0;
+  });
+  const [strategy, setStrategy] = useState<'avalanche' | 'snowball'>(() => {
+    if (typeof window === 'undefined') return 'avalanche';
+    const saved = localStorage.getItem('payoff-strategy');
+    return (saved === 'snowball' || saved === 'avalanche') ? saved : 'avalanche';
+  });
   const [showComparison, setShowComparison] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applied, setApplied] = useState(false);
+
+  // Save settings to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('payoff-extra-payment', String(extraPayment));
+  }, [extraPayment]);
+
+  useEffect(() => {
+    localStorage.setItem('payoff-strategy', strategy);
+  }, [strategy]);
 
   const activeCards = cards.filter((c) => c.isActive && c.balance > 0);
   const totalBalance = activeCards.reduce((s, c) => s + c.balance, 0);
@@ -37,9 +55,15 @@ function PayoffPageInner() {
     setApplying(true);
 
     try {
-      // Remove existing payoff plan items
+      // Remove ALL existing payoff plan items first (prevents duplicates)
       const existingPayoffItems = scheduledItems.filter((i) => i.sourceType === 'payoff');
       for (const item of existingPayoffItems) {
+        await deleteScheduledItem(item.id);
+      }
+
+      // Also remove existing card min payment items since payoff replaces them
+      const cardMinItems = scheduledItems.filter((i) => i.sourceType === 'card');
+      for (const item of cardMinItems) {
         await deleteScheduledItem(item.id);
       }
 
@@ -54,9 +78,12 @@ function PayoffPageInner() {
         const firstPayment = cardResult.payments[0];
         const totalPayment = firstPayment.payment;
 
+        // Use the card's paymentAccountId if set, otherwise selected account
+        const targetAccountId = card.paymentAccountId ?? selectedAccount.id;
+
         await addScheduledItem({
           id: crypto.randomUUID(),
-          accountId: selectedAccount.id,
+          accountId: targetAccountId,
           type: 'expense',
           amount: totalPayment,
           description: `${card.name} payoff payment`,
