@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 
 const TABS = [
   { href: '/calendar', label: 'Calendar', icon: '📅' },
+  { href: '/scan', label: 'Scan', icon: '📷' },
   { href: '/cards', label: 'Cards', icon: '💳' },
   { href: '/payoff', label: 'Payoff', icon: '🎯' },
   { href: '/wishlist', label: 'Wishlist', icon: '⭐' },
@@ -25,7 +26,7 @@ export function TabBar() {
             <Link
               key={tab.href}
               href={tab.href}
-              className={`flex flex-col items-center justify-center gap-0.5 py-2 px-3 flex-1 transition-colors ${
+              className={`flex flex-col items-center justify-center gap-0.5 py-2 px-2 flex-1 transition-colors ${
                 active ? 'text-blue-600' : 'text-gray-400 hover:text-gray-600'
               }`}
             >

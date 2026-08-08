@@ -17,7 +17,7 @@ interface CardFormProps {
 
 export function CardForm({ open, editCard, onClose }: CardFormProps) {
   const { addCard, updateCard } = useCards();
-  const { account, addScheduledItem, updateScheduledItem, scheduledItems } = useCashflow();
+  const { selectedAccount, addScheduledItem, updateScheduledItem, scheduledItems } = useCashflow();
 
   const [name, setName] = useState('');
   const [balance, setBalance] = useState('');
@@ -99,7 +99,7 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
       }
 
       // Sync minimum payment to calendar
-      if (account) {
+      if (selectedAccount) {
         // Remove old scheduled item for this card if editing
         if (editCard) {
           const oldItem = scheduledItems.find(
@@ -115,10 +115,10 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
               updatedAt: now,
             });
           } else {
-            await createMinPaymentItem(card, account.id, addScheduledItem);
+            await createMinPaymentItem(card, selectedAccount.id, addScheduledItem);
           }
         } else {
-          await createMinPaymentItem(card, account.id, addScheduledItem);
+          await createMinPaymentItem(card, selectedAccount.id, addScheduledItem);
         }
       }
 
@@ -316,7 +316,7 @@ function getNextDueDate(dueDay: number): Date {
 async function createMinPaymentItem(
   card: CreditCard,
   accountId: string,
-  addItem: (item: any) => Promise<void>,
+  addItem: (item: import('@/lib/types').ScheduledItem) => Promise<void>,
 ) {
   const now = new Date();
   await addItem({

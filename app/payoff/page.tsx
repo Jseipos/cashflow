@@ -9,7 +9,7 @@ import type { PayoffPlanResult } from '@/lib/types';
 
 function PayoffPageInner() {
   const { cards, loading } = useCards();
-  const { account, addScheduledItem, deleteScheduledItem, scheduledItems } = useCashflow();
+  const { selectedAccount, addScheduledItem, deleteScheduledItem, scheduledItems } = useCashflow();
 
   const [extraPayment, setExtraPayment] = useState(0); // dollars
   const [strategy, setStrategy] = useState<'avalanche' | 'snowball'>('avalanche');
@@ -33,7 +33,7 @@ function PayoffPageInner() {
   }, [showComparison, activeCards, extraCents]);
 
   const handleApplyPlan = async () => {
-    if (!result || !account) return;
+    if (!result || !selectedAccount) return;
     setApplying(true);
 
     try {
@@ -56,7 +56,7 @@ function PayoffPageInner() {
 
         await addScheduledItem({
           id: crypto.randomUUID(),
-          accountId: account.id,
+          accountId: selectedAccount.id,
           type: 'expense',
           amount: totalPayment,
           description: `${card.name} payoff payment`,

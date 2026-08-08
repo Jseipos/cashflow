@@ -12,7 +12,7 @@ interface WishlistFormProps {
 
 export function WishlistForm({ open, editItem, onClose }: WishlistFormProps) {
   const { addItem, updateItem } = useWishlist();
-  const { account, addScheduledItem, updateScheduledItem, deleteScheduledItem, scheduledItems } = useCashflow();
+  const { selectedAccount, addScheduledItem, updateScheduledItem, deleteScheduledItem, scheduledItems } = useCashflow();
 
   const [name, setName] = useState('');
   const [cost, setCost] = useState('');
@@ -93,7 +93,7 @@ export function WishlistForm({ open, editItem, onClose }: WishlistFormProps) {
       }
 
       // Sync savings to calendar
-      if (account && savingsCents > 0) {
+      if (selectedAccount && savingsCents > 0) {
         // Remove old scheduled item for this wishlist item if editing
         if (editItem) {
           const oldItem = scheduledItems.find(
@@ -108,12 +108,12 @@ export function WishlistForm({ open, editItem, onClose }: WishlistFormProps) {
               updatedAt: now,
             });
           } else {
-            await createSavingsItem(item, account.id, addScheduledItem);
+            await createSavingsItem(item, selectedAccount.id, addScheduledItem);
           }
         } else {
-          await createSavingsItem(item, account.id, addScheduledItem);
+          await createSavingsItem(item, selectedAccount.id, addScheduledItem);
         }
-      } else if (account && savingsCents === 0 && editItem) {
+      } else if (selectedAccount && savingsCents === 0 && editItem) {
         // If savings set to 0, remove the scheduled item
         const oldItem = scheduledItems.find(
           (i) => i.sourceId === item.id && i.sourceType === 'wishlist'
@@ -297,7 +297,7 @@ function getNextSavingsDate(day: number): Date {
 async function createSavingsItem(
   item: WishlistItem,
   accountId: string,
-  addItem: (item: any) => Promise<void>,
+  addItem: (item: import('@/lib/types').ScheduledItem) => Promise<void>,
 ) {
   const now = new Date();
   await addItem({

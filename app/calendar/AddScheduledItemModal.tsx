@@ -3,7 +3,8 @@
 import { useState, useEffect } from 'react';
 import { format, parse } from 'date-fns';
 import type { ScheduledItem, ItemType, RecurrenceType } from '@/lib/types';
-import { useCashflow } from '@/lib/context';
+import { useCashflow, useCategories } from '@/lib/context';
+import { CategoryPicker } from '@/app/components/CategoryPicker';
 import { formatCurrency } from '@/lib/calculations';
 
 interface AddScheduledItemModalProps {
@@ -19,13 +20,17 @@ export function AddScheduledItemModal({
   editItem,
   onClose,
 }: AddScheduledItemModalProps) {
-  const { account, addScheduledItem, updateScheduledItem } = useCashflow();
+  const { accounts, selectedAccountId, addScheduledItem, updateScheduledItem } = useCashflow();
+  const { categories } = useCategories();
 
   const [type, setType] = useState<ItemType>('expense');
   const [amount, setAmount] = useState<string>(''); // dollars input
   const [description, setDescription] = useState('');
   const [date, setDate] = useState<string>(''); // yyyy-MM-dd
   const [recurrence, setRecurrence] = useState<RecurrenceType>('once');
+  const [categoryId, setCategoryId] = useState<string | null>(null);
+  const [accountId, setAccountId] = useState<string>('');
+  const [toAccountId, setToAccountId] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -39,15 +44,21 @@ export function AddScheduledItemModal({
       setDescription(editItem.description);
       setDate(format(editItem.startDate, 'yyyy-MM-dd'));
       setRecurrence(editItem.recurrence);
+      setCategoryId(editItem.categoryId ?? null);
+      setAccountId(editItem.accountId);
+      setToAccountId(editItem.toAccountId ?? '');
     } else {
       setType('expense');
       setAmount('');
       setDescription('');
       setDate(format(initialDate ?? new Date(), 'yyyy-MM-dd'));
       setRecurrence('once');
+      setCategoryId(null);
+      setAccountId(selectedAccountId ?? accounts[0]?.id ?? '');
+      setToAccountId('');
     }
     setError(null);
-  }, [open, editItem, initialDate]);
+  }, [open, editItem, initialDate, selectedAccountId, accounts]);
 
   if (!open) return null;
 
@@ -55,8 +66,8 @@ export function AddScheduledItemModal({
     e.preventDefault();
     setError(null);
 
-    if (!account) {
-      setError('No account found');
+    if (!accountId) {
+      setError('Select an account');
       return;
     }
 
@@ -71,6 +82,16 @@ export function AddScheduledItemModal({
       return;
     }
 
+    if (type === 'transfer' && !toAccountId) {
+      setError('Select a destination account for the transfer');
+      return;
+    }
+
+    if (type === 'transfer' && toAccountId === accountId) {
+      setError('Cannot transfer to the same account');
+      return;
+    }
+
     const parsedDate = parse(date, 'yyyy-MM-dd', new Date());
     if (isNaN(parsedDate.getTime())) {
       setError('Enter a valid date');
@@ -82,10 +103,11 @@ export function AddScheduledItemModal({
       const now = new Date();
       const item: ScheduledItem = {
         id: editItem?.id ?? crypto.randomUUID(),
-        accountId: account.id,
+        accountId,
         type,
         amount: amountCents,
         description: description.trim(),
+        categoryId: categoryId ?? undefined,
         recurrence,
         startDate: parsedDate,
         endDate: null,
@@ -94,6 +116,10 @@ export function AddScheduledItemModal({
         createdAt: editItem?.createdAt ?? now,
         updatedAt: now,
       };
+
+      if (type === 'transfer') {
+        item.toAccountId = toAccountId;
+      }
 
       if (editItem) {
         await updateScheduledItem(item);
@@ -107,6 +133,8 @@ export function AddScheduledItemModal({
       setSaving(false);
     }
   };
+
+  const availableToAccounts = accounts.filter((a) => a.id !== accountId);
 
   return (
     <>
@@ -143,7 +171,7 @@ export function AddScheduledItemModal({
                 <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">
                   Type
                 </label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className={type === 'transfer' ? 'grid grid-cols-3 gap-2' : 'grid grid-cols-2 gap-2'}>
                   <button
                     type="button"
                     onClick={() => setType('expense')}
@@ -166,8 +194,58 @@ export function AddScheduledItemModal({
                   >
                     💰 Income
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setType('transfer')}
+                    className={`px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                      type === 'transfer'
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    🔄 Transfer
+                  </button>
                 </div>
               </div>
+
+              {/* Account selector */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">
+                  {type === 'transfer' ? 'From Account' : 'Account'}
+                </label>
+                <select
+                  value={accountId}
+                  onChange={(e) => setAccountId(e.target.value)}
+                  className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-gray-900 bg-white"
+                >
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.type})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Transfer destination */}
+              {type === 'transfer' && (
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">
+                    To Account
+                  </label>
+                  <select
+                    value={toAccountId}
+                    onChange={(e) => setToAccountId(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-gray-900 bg-white"
+                  >
+                    <option value="">Select destination...</option>
+                    {availableToAccounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.type})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {/* Amount */}
               <div>
@@ -246,6 +324,15 @@ export function AddScheduledItemModal({
                   ))}
                 </div>
               </div>
+
+              {/* Category */}
+              {type !== 'transfer' && (
+                <CategoryPicker
+                  categories={categories}
+                  selectedId={categoryId}
+                  onSelect={setCategoryId}
+                />
+              )}
 
               {/* Error */}
               {error && (

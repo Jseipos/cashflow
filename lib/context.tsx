@@ -1,14 +1,19 @@
 'use client';
 
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import type { Account, ScheduledItem, CreditCard, WishlistItem } from './types';
+import type { Account, ScheduledItem, CreditCard, WishlistItem, Category } from './types';
 import {
   getDB,
   ensureDefaultAccount,
+  ensureDefaultCategories,
+  getAllAccounts,
+  getActiveAccounts,
+  addAccount as dbAddAccount,
+  updateAccount as dbUpdateAccount,
+  deleteAccount as dbDeleteAccount,
   addScheduledItem as dbAdd,
   updateScheduledItem as dbUpdate,
   deleteScheduledItem as dbDelete,
-  updateAccount as dbUpdateAccount,
   deleteScheduledItemsBySource,
   deactivateScheduledItemsBySource,
   activateScheduledItemsBySource,
@@ -21,26 +26,37 @@ import {
   addWishlistItem,
   updateWishlistItem,
   deleteWishlistItem,
+  getAllCategories,
+  getActiveCategories,
+  addCategory as dbAddCategory,
+  updateCategory as dbUpdateCategory,
+  deleteCategory as dbDeleteCategory,
 } from './db';
 
-// ---- Cashflow Context (Phase 1, extended) ----
+// ---- Cashflow Context (Phase 1, extended Phase 4) ----
 
 interface CashflowContextValue {
-  account: Account | null;
+  accounts: Account[];
+  selectedAccountId: string | null;
+  selectedAccount: Account | null;
   scheduledItems: ScheduledItem[];
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  setSelectedAccountId: (id: string | null) => void;
   addScheduledItem: (item: ScheduledItem) => Promise<void>;
   updateScheduledItem: (item: ScheduledItem) => Promise<void>;
   deleteScheduledItem: (id: string) => Promise<void>;
+  addAccount: (account: Account) => Promise<void>;
   updateAccount: (account: Account) => Promise<void>;
+  deleteAccount: (id: string) => Promise<void>;
 }
 
 const CashflowContext = createContext<CashflowContextValue | null>(null);
 
 export function CashflowProvider({ children }: { children: React.ReactNode }) {
-  const [account, setAccount] = useState<Account | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [scheduledItems, setScheduledItems] = useState<ScheduledItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -49,9 +65,18 @@ export function CashflowProvider({ children }: { children: React.ReactNode }) {
     try {
       setLoading(true);
       const db = getDB();
-      const acct = await ensureDefaultAccount();
+      await ensureDefaultAccount();
+      await ensureDefaultCategories();
+      const activeAccounts = await getActiveAccounts();
       const items = await db.scheduledItems.toArray();
-      setAccount(acct);
+      setAccounts(activeAccounts);
+
+      // Auto-select first account if none selected or selected was deleted
+      setSelectedAccountId((prev) => {
+        if (prev && activeAccounts.some((a) => a.id === prev)) return prev;
+        return activeAccounts[0]?.id ?? null;
+      });
+
       setScheduledItems(items);
       setError(null);
     } catch (e) {
@@ -64,6 +89,8 @@ export function CashflowProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
 
   const addScheduledItem = useCallback(async (item: ScheduledItem) => {
     await dbAdd(item);
@@ -80,23 +107,38 @@ export function CashflowProvider({ children }: { children: React.ReactNode }) {
     await refresh();
   }, [refresh]);
 
-  const updateAccount = useCallback(async (acct: Account) => {
-    await dbUpdateAccount(acct);
-    setAccount(acct);
-  }, []);
+  const addAccount = useCallback(async (account: Account) => {
+    await dbAddAccount(account);
+    await refresh();
+  }, [refresh]);
+
+  const updateAccount = useCallback(async (account: Account) => {
+    await dbUpdateAccount(account);
+    await refresh();
+  }, [refresh]);
+
+  const deleteAccount = useCallback(async (id: string) => {
+    await dbDeleteAccount(id);
+    await refresh();
+  }, [refresh]);
 
   return (
     <CashflowContext.Provider
       value={{
-        account,
+        accounts,
+        selectedAccountId,
+        selectedAccount,
         scheduledItems,
         loading,
         error,
         refresh,
+        setSelectedAccountId,
         addScheduledItem,
         updateScheduledItem,
         deleteScheduledItem,
+        addAccount,
         updateAccount,
+        deleteAccount,
       }}
     >
       {children}
@@ -107,6 +149,73 @@ export function CashflowProvider({ children }: { children: React.ReactNode }) {
 export function useCashflow() {
   const ctx = useContext(CashflowContext);
   if (!ctx) throw new Error('useCashflow must be used within CashflowProvider');
+  return ctx;
+}
+
+// ---- Category Context (Phase 4) ----
+
+interface CategoryContextValue {
+  categories: Category[];
+  loading: boolean;
+  error: string | null;
+  refresh: () => Promise<void>;
+  addCategory: (category: Category) => Promise<void>;
+  updateCategory: (category: Category) => Promise<void>;
+  deleteCategory: (id: string) => Promise<void>;
+}
+
+const CategoryContext = createContext<CategoryContextValue | null>(null);
+
+export function CategoryProvider({ children }: { children: React.ReactNode }) {
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setLoading(true);
+      await ensureDefaultCategories();
+      const active = await getActiveCategories();
+      setCategories(active);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load categories');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const addCategory = useCallback(async (category: Category) => {
+    await dbAddCategory(category);
+    await refresh();
+  }, [refresh]);
+
+  const updateCategory = useCallback(async (category: Category) => {
+    await dbUpdateCategory(category);
+    await refresh();
+  }, [refresh]);
+
+  const deleteCategory = useCallback(async (id: string) => {
+    await dbDeleteCategory(id);
+    await refresh();
+  }, [refresh]);
+
+  return (
+    <CategoryContext.Provider
+      value={{ categories, loading, error, refresh, addCategory, updateCategory, deleteCategory }}
+    >
+      {children}
+    </CategoryContext.Provider>
+  );
+}
+
+export function useCategories() {
+  const ctx = useContext(CategoryContext);
+  if (!ctx) throw new Error('useCategories must be used within CategoryProvider');
   return ctx;
 }
 
@@ -257,11 +366,13 @@ export function useWishlist() {
 export function AppProviders({ children }: { children: React.ReactNode }) {
   return (
     <CashflowProvider>
-      <CardProvider>
-        <WishlistProvider>
-          {children}
-        </WishlistProvider>
-      </CardProvider>
+      <CategoryProvider>
+        <CardProvider>
+          <WishlistProvider>
+            {children}
+          </WishlistProvider>
+        </CardProvider>
+      </CategoryProvider>
     </CashflowProvider>
   );
 }

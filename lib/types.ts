@@ -1,9 +1,9 @@
-// Core types for Cash Flow Calendar — Phase 1 + Phase 2
+// Core types for Cash Flow Calendar — Phase 1 + Phase 2 + Phase 3 + Phase 4
 
 export interface Account {
   id: string;
   name: string;
-  type: 'checking' | 'savings' | 'credit';
+  type: 'checking' | 'savings' | 'cash' | 'credit';
   currentBalance: number; // cents
   lowBalanceThreshold: number; // cents
   color: string;
@@ -33,6 +33,9 @@ export interface ScheduledItem {
   sourceId?: string; // ID of the CreditCard or WishlistItem that generated this
   sourceType?: 'card' | 'payoff' | 'wishlist';
 
+  // Phase 4: transfer support
+  toAccountId?: string | null; // for transfer type only
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -46,7 +49,9 @@ export interface ScheduledInstance {
   amount: number; // cents
   description: string;
   accountId: string;
+  categoryId?: string;
   sourceType?: 'card' | 'payoff' | 'wishlist';
+  toAccountId?: string | null;
 }
 
 // Running balance for a single day
@@ -121,4 +126,15 @@ export interface PayoffPlanResult {
   totalPaid: number; // cents
   debtFreeDate: Date;
   totalMonths: number;
+}
+
+// Phase 4: Category
+export interface Category {
+  id: string;
+  name: string;
+  icon: string; // emoji
+  color: string; // hex color
+  isCustom: boolean;
+  isActive: boolean;
+  createdAt: Date;
 }

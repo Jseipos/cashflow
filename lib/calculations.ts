@@ -50,7 +50,9 @@ export function expandScheduledItem(
         amount: item.amount,
         description: item.description,
         accountId: item.accountId,
+        categoryId: item.categoryId,
         sourceType: item.sourceType,
+        toAccountId: item.toAccountId,
       });
     }
 
@@ -78,7 +80,8 @@ export function expandScheduledItem(
 
 /**
  * Calculate running balance projection for a range of days.
- * Returns an array of DayBalance objects.
+ * Returns an array of DayBalance objects for the specified account.
+ * Transfers OUT of this account are treated as expenses, transfers IN are income.
  */
 export function projectBalances(
   account: Account,
@@ -93,8 +96,32 @@ export function projectBalances(
   const allInstances: ScheduledInstance[] = [];
   for (const item of scheduledItems) {
     if (!item.isActive) continue;
-    if (item.accountId !== account.id) continue;
-    allInstances.push(...expandScheduledItem(item, start, end));
+
+    if (item.type === 'transfer') {
+      // Transfer affects both the source and destination account
+      if (item.accountId === account.id) {
+        // This account is the source — money goes out
+        allInstances.push(...expandScheduledItem(item, start, end));
+      } else if (item.toAccountId === account.id) {
+        // This account is the destination — money comes in
+        // Create a mirrored instance as income
+        const transferInstances = expandScheduledItem(item, start, end);
+        for (const inst of transferInstances) {
+          allInstances.push({
+            ...inst,
+            id: `${inst.id}-inbound`,
+            type: 'income' as const,
+            accountId: account.id,
+            description: inst.description.includes('→') ? inst.description : `${inst.description} (transfer in)`,
+          });
+        }
+      }
+    } else {
+      // Regular income/expense — only include if it belongs to this account
+      if (item.accountId === account.id) {
+        allInstances.push(...expandScheduledItem(item, start, end));
+      }
+    }
   }
 
   // Group instances by day (ISO date string)
@@ -121,7 +148,7 @@ export function projectBalances(
       } else if (item.type === 'expense') {
         runningBalance -= item.amount;
       } else if (item.type === 'transfer') {
-        // For single-account MVP, treat transfer as expense
+        // Transfer out from this account
         runningBalance -= item.amount;
       }
     }

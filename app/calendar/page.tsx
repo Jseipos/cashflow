@@ -8,17 +8,21 @@ import {
   isToday,
   isSameDay,
   startOfDay,
+  startOfMonth,
+  endOfMonth,
+  isWithinInterval,
 } from 'date-fns';
-import { CashflowProvider, useCashflow } from '@/lib/context';
+import { CashflowProvider, CategoryProvider, useCashflow, useCategories } from '@/lib/context';
 import { CalendarGrid } from './CalendarGrid';
 import { DayDetailPanel } from './DayDetailPanel';
 import { AddScheduledItemModal } from './AddScheduledItemModal';
 import { SettingsModal } from './SettingsModal';
 import { projectBalances, formatCurrency } from '@/lib/calculations';
-import type { DayBalance, ScheduledItem } from '@/lib/types';
+import type { DayBalance, ScheduledItem, ScheduledInstance } from '@/lib/types';
 
 function CalendarPageInner() {
-  const { account, scheduledItems, loading, error } = useCashflow();
+  const { accounts, selectedAccountId, selectedAccount, scheduledItems, loading, error, setSelectedAccountId } = useCashflow();
+  const { categories } = useCategories();
 
   const [viewMonth, setViewMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
@@ -26,28 +30,75 @@ function CalendarPageInner() {
   const [modalDate, setModalDate] = useState<Date | null>(null);
   const [editItem, setEditItem] = useState<ScheduledItem | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false);
 
   // Get the balance map for the full projection (for today's balance display)
   const todayBalance = useMemo(() => {
-    if (!account) return null;
-    const balances = projectBalances(account, scheduledItems, new Date(), 1);
+    if (!selectedAccount) return null;
+    const balances = projectBalances(selectedAccount, scheduledItems, new Date(), 1);
     return balances[0] ?? null;
-  }, [account, scheduledItems]);
+  }, [selectedAccount, scheduledItems]);
 
   // Get the DayBalance for the selected date
   const selectedDayBalance = useMemo(() => {
-    if (!selectedDate || !account) return null;
+    if (!selectedDate || !selectedAccount) return null;
     const today = new Date();
     const start = startOfDay(today);
 
-    // If selected date is before today, we still want to show items
-    // Project from the selected date's month start
     const projStart = isBeforeDay(selectedDate, start) ? selectedDate : start;
     const days = Math.max(90, differenceInDaysSafe(selectedDate, projStart) + 5);
 
-    const balances = projectBalances(account, scheduledItems, projStart, days);
+    const balances = projectBalances(selectedAccount, scheduledItems, projStart, days);
     return balances.find((b) => isSameDay(b.date, selectedDate)) ?? null;
-  }, [selectedDate, account, scheduledItems]);
+  }, [selectedDate, selectedAccount, scheduledItems]);
+
+  // Spending by category for current month
+  const monthCategorySummary = useMemo(() => {
+    if (!selectedAccount) return [];
+    const monthStart = startOfMonth(viewMonth);
+    const monthEnd = endOfMonth(viewMonth);
+    const today = new Date();
+    const projStart = isBeforeDay(monthStart, startOfDay(today)) ? monthStart : startOfDay(today);
+    const projDays = Math.max(
+      90,
+      differenceInDaysSafe(monthEnd, projStart) + 1,
+    );
+    const balances = projectBalances(selectedAccount, scheduledItems, projStart, projDays);
+
+    // Collect all expense instances within the month
+    const catTotals = new Map<string, number>(); // categoryId -> cents
+    for (const day of balances) {
+      if (!isWithinInterval(day.date, { start: monthStart, end: monthEnd })) continue;
+      for (const item of day.items) {
+        if (item.type !== 'expense') continue;
+        if (item.categoryId) {
+          catTotals.set(item.categoryId, (catTotals.get(item.categoryId) ?? 0) + item.amount);
+        } else {
+          // Uncategorized
+          catTotals.set('__none', (catTotals.get('__none') ?? 0) + item.amount);
+        }
+      }
+    }
+
+    // Build summary sorted by amount descending
+    const catMap = new Map(categories.map((c) => [c.id, c]));
+    const summary = Array.from(catTotals.entries())
+      .map(([catId, total]) => {
+        const cat = catId !== '__none' ? catMap.get(catId) : null;
+        return {
+          id: catId,
+          name: cat?.name ?? 'Uncategorized',
+          icon: cat?.icon ?? '📦',
+          color: cat?.color ?? '#94a3b8',
+          total,
+        };
+      })
+      .sort((a, b) => b.total - a.total);
+
+    return summary;
+  }, [selectedAccount, scheduledItems, viewMonth, categories]);
+
+  const totalMonthSpending = monthCategorySummary.reduce((sum, c) => sum + c.total, 0);
 
   const handleSelectDay = useCallback((date: Date) => {
     setSelectedDate(date);
@@ -61,16 +112,15 @@ function CalendarPageInner() {
     setEditItem(null);
     setModalDate(date);
     setModalOpen(true);
-    setSelectedDate(null); // close panel
+    setSelectedDate(null);
   }, []);
 
   const handleEditItem = useCallback((item: ScheduledItem) => {
-    // Find the full item from scheduledItems
     const full = scheduledItems.find((s) => s.id === item.id);
     setEditItem(full ?? item);
     setModalDate(null);
     setModalOpen(true);
-    setSelectedDate(null); // close panel
+    setSelectedDate(null);
   }, [scheduledItems]);
 
   const handleAddButton = useCallback(() => {
@@ -133,6 +183,34 @@ function CalendarPageInner() {
         </div>
       </header>
 
+      {/* Account switcher */}
+      {accounts.length > 0 && (
+        <div className="max-w-2xl mx-auto w-full px-4 pt-3">
+          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+            {accounts.map((acct) => {
+              const isSelected = acct.id === selectedAccountId;
+              return (
+                <button
+                  key={acct.id}
+                  onClick={() => setSelectedAccountId(acct.id)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium transition-all whitespace-nowrap ${
+                    isSelected
+                      ? 'text-white shadow-sm'
+                      : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-50'
+                  }`}
+                  style={isSelected ? { backgroundColor: acct.color } : undefined}
+                >
+                  <span className="text-xs">
+                    {acct.type === 'checking' ? '🏦' : acct.type === 'savings' ? '🐷' : acct.type === 'cash' ? '💵' : '💳'}
+                  </span>
+                  <span>{acct.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Month navigation */}
       <div className="max-w-2xl mx-auto w-full px-4 py-3 flex items-center justify-between">
         <button
@@ -169,6 +247,10 @@ function CalendarPageInner() {
           Expense
         </div>
         <div className="flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-indigo-500" />
+          Transfer
+        </div>
+        <div className="flex items-center gap-1.5">
           <div className="w-0 h-0 border-l-[8px] border-l-transparent border-t-[8px] border-t-amber-400" />
           Low
         </div>
@@ -180,14 +262,55 @@ function CalendarPageInner() {
 
       {/* Calendar grid */}
       <main className="flex-1 max-w-2xl mx-auto w-full px-4 pb-24">
-        {account && (
+        {selectedAccount && (
           <CalendarGrid
-            account={account}
+            account={selectedAccount}
             scheduledItems={scheduledItems}
             viewMonth={viewMonth}
             selectedDate={selectedDate}
             onSelectDay={handleSelectDay}
           />
+        )}
+
+        {/* Spending by category summary */}
+        {monthCategorySummary.length > 0 && (
+          <div className="mt-6 bg-white rounded-xl border border-gray-200 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-bold text-gray-900">
+                {format(viewMonth, 'MMM')} Spending
+              </h3>
+              <span className="text-sm font-semibold text-gray-700">
+                {formatCurrency(totalMonthSpending)}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {monthCategorySummary.slice(0, 6).map((cat) => {
+                const pct = totalMonthSpending > 0 ? (cat.total / totalMonthSpending) * 100 : 0;
+                return (
+                  <div key={cat.id} className="flex items-center gap-2">
+                    <span className="text-base leading-none w-5">{cat.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span className="text-xs font-medium text-gray-700 truncate">{cat.name}</span>
+                        <span className="text-xs text-gray-500 ml-2">{formatCurrency(cat.total)}</span>
+                      </div>
+                      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all"
+                          style={{ width: `${pct}%`, backgroundColor: cat.color }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {monthCategorySummary.length > 6 && (
+                <p className="text-xs text-gray-400 pt-1">
+                  +{monthCategorySummary.length - 6} more categories
+                </p>
+              )}
+            </div>
+          </div>
         )}
       </main>
 
@@ -248,7 +371,9 @@ function differenceInDaysSafe(a: Date, b: Date): number {
 export default function CalendarPage() {
   return (
     <CashflowProvider>
-      <CalendarPageInner />
+      <CategoryProvider>
+        <CalendarPageInner />
+      </CategoryProvider>
     </CashflowProvider>
   );
 }
