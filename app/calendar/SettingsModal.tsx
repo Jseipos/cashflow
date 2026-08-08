@@ -3,8 +3,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useCashflow } from '@/lib/context';
 import { formatCurrency } from '@/lib/calculations';
-import { getDB, getAllScheduledItems, getAllAccounts, getAllCreditCards, getAllCategories, getAllWishlistItems } from '@/lib/db';
-import type { WishlistItem, Category, CreditCard, ScheduledItem } from '@/lib/types';
+import { getDB, getAllScheduledItems, getAllAccounts, getAllCreditCards, getAllCategories } from '@/lib/db';
+import { normalizeLineEndings, detectDelimiter, parseDelimitedLine, safeCell, dollarsToCents } from '@/lib/csv-utils';
+import type { ScheduledItem } from '@/lib/types';
 import type { Account } from '@/lib/types';
 
 interface SettingsModalProps {
@@ -44,6 +45,13 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [restoring, setRestoring] = useState(false);
   const [restoreMsg, setRestoreMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Paste CSV import state
+  const [showPasteImport, setShowPasteImport] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+  const [pastePreview, setPastePreview] = useState<PastePreviewRow[]>([]);
+  const [pasteStep, setPasteStep] = useState<'input' | 'preview'>('input');
+  const [importingCsv, setImportingCsv] = useState(false);
 
   useEffect(() => {
     if (open && selectedAccount) {
@@ -320,7 +328,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     URL.revokeObjectURL(url);
   }, []);
 
-  // ---- Restore from Backup (JSON or CSV) ----
+  // ---- Restore from Backup (JSON only) ----
   const handleRestore = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -331,147 +339,144 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
     try {
       const text = await file.text();
-      const isCSV = file.name.endsWith('.csv') || file.type === 'text/csv';
+      const data = JSON.parse(text);
 
-      if (isCSV) {
-        // ---- CSV Import: scheduled items only ----
-        const lines = text.split('\n').filter((l) => l.trim());
-        if (lines.length < 2) throw new Error('CSV file is empty or has no data rows');
-
-        const headers = lines[0].split(',').map((h) => h.trim().toLowerCase().replace(/"/g, ''));
-        const dateIdx = headers.indexOf('date');
-        const descIdx = headers.indexOf('description');
-        const typeIdx = headers.indexOf('type');
-        const amountIdx = headers.indexOf('amount');
-        const accountIdx = headers.indexOf('account');
-        const categoryIdx = headers.indexOf('category');
-        const recurrenceIdx = headers.indexOf('recurrence');
-
-        if (dateIdx === -1 || descIdx === -1 || amountIdx === -1) {
-          throw new Error('CSV must have Date, Description, and Amount columns');
-        }
-
-        const db = getDB();
-        const allAccounts = await db.accounts.toArray();
-        const defaultAccount = allAccounts[0];
-        if (!defaultAccount) throw new Error('No account found — create one first');
-
-        // Build account lookup by name
-        const accountByName = new Map(allAccounts.map((a) => [a.name.toLowerCase(), a]));
-        const allCategories = await db.categories.toArray();
-        const catByName = new Map(allCategories.map((c) => [c.name.toLowerCase(), c]));
-
-        const now = new Date();
-        const items: ScheduledItem[] = [];
-
-        for (let i = 1; i < lines.length; i++) {
-          const cols = parseCSVLine(lines[i]);
-          if (cols.length < 3) continue;
-
-          const safeCell = (idx: number) => (cols[idx] ?? '').trim();
-          const safeLower = (idx: number) => safeCell(idx).toLowerCase();
-
-          const dateStr = safeCell(dateIdx);
-          const desc = safeCell(descIdx);
-          const type = (typeIdx >= 0 ? safeLower(typeIdx) : 'expense') as 'income' | 'expense' | 'transfer';
-          const amount = Math.round(parseFloat(safeCell(amountIdx).replace(/[$,]/g, '') || '0') * 100);
-          const accountName = accountIdx >= 0 ? safeLower(accountIdx) : '';
-          const catName = categoryIdx >= 0 ? safeLower(categoryIdx) : '';
-          const recurrence = (recurrenceIdx >= 0 ? safeLower(recurrenceIdx) : 'once') as ScheduledItem['recurrence'];
-
-          if (!dateStr || !desc || isNaN(amount)) continue;
-
-          const account = accountByName.get(accountName) ?? defaultAccount;
-          const category = catName ? catByName.get(catName) : undefined;
-
-          items.push({
-            id: crypto.randomUUID(),
-            accountId: account.id,
-            type: ['income', 'expense', 'transfer'].includes(type) ? type : 'expense',
-            amount,
-            description: desc,
-            categoryId: category?.id ?? undefined,
-            recurrence: ['once', 'weekly', 'biweekly', 'monthly'].includes(recurrence) ? recurrence : 'once',
-            startDate: new Date(dateStr + 'T12:00:00'),
-            endDate: null,
-            isActive: true,
-            lastProcessedDate: null,
-            createdAt: now,
-            updatedAt: now,
-          });
-        }
-
-        if (items.length === 0) throw new Error('No valid rows found in CSV');
-
-        await db.scheduledItems.bulkAdd(items);
-        setRestoreMsg(`Imported ${items.length} scheduled items from CSV`);
-        await refresh();
-        setTimeout(() => setRestoreMsg(null), 3000);
-      } else {
-        // ---- JSON Import: full backup ----
-        const data = JSON.parse(text);
-
-        if (!data.accounts || !Array.isArray(data.accounts)) {
-          throw new Error('Invalid backup file: missing accounts array');
-        }
-
-        const db = getDB();
-
-        // Clear existing data
-        await Promise.all([
-          db.accounts.clear(),
-          db.scheduledItems.clear(),
-          db.creditCards.clear(),
-          db.wishlistItems.clear(),
-          db.categories.clear(),
-        ]);
-
-        // Restore dates from strings
-        const parseDates = (obj: Record<string, unknown>, fields: string[]) => {
-          for (const f of fields) {
-            if (obj[f] && typeof obj[f] === 'string') {
-              obj[f] = new Date(obj[f] as string);
-            }
-          }
-          return obj;
-        };
-
-        const dateFields = ['createdAt', 'updatedAt', 'startDate', 'endDate', 'lastProcessedDate', 'targetDate'];
-
-        if (data.accounts?.length) {
-          await db.accounts.bulkAdd(data.accounts.map((a: Record<string, unknown>) => parseDates(a, dateFields)));
-        }
-        if (data.scheduledItems?.length) {
-          await db.scheduledItems.bulkAdd(data.scheduledItems.map((i: Record<string, unknown>) => parseDates(i, dateFields)));
-        }
-        if (data.creditCards?.length) {
-          await db.creditCards.bulkAdd(data.creditCards.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
-        }
-        if (data.wishlistItems?.length) {
-          await db.wishlistItems.bulkAdd(data.wishlistItems.map((w: Record<string, unknown>) => parseDates(w, dateFields)));
-        }
-        if (data.categories?.length) {
-          await db.categories.bulkAdd(data.categories.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
-        }
-
-        const counts = [
-          data.accounts?.length ? `${data.accounts.length} accounts` : null,
-          data.scheduledItems?.length ? `${data.scheduledItems.length} items` : null,
-          data.creditCards?.length ? `${data.creditCards.length} cards` : null,
-          data.wishlistItems?.length ? `${data.wishlistItems.length} wishlist` : null,
-          data.categories?.length ? `${data.categories.length} categories` : null,
-        ].filter(Boolean).join(', ');
-
-        setRestoreMsg(`Restored: ${counts}`);
-        await refresh();
-        setTimeout(() => setRestoreMsg(null), 3000);
+      if (!data.accounts || !Array.isArray(data.accounts)) {
+        throw new Error('Invalid backup file: missing accounts array');
       }
+
+      const db = getDB();
+
+      // Clear existing data
+      await Promise.all([
+        db.accounts.clear(),
+        db.scheduledItems.clear(),
+        db.creditCards.clear(),
+        db.wishlistItems.clear(),
+        db.categories.clear(),
+      ]);
+
+      // Restore dates from strings
+      const parseDates = (obj: Record<string, unknown>, fields: string[]) => {
+        for (const f of fields) {
+          if (obj[f] && typeof obj[f] === 'string') {
+            obj[f] = new Date(obj[f] as string);
+          }
+        }
+        return obj;
+      };
+
+      const dateFields = ['createdAt', 'updatedAt', 'startDate', 'endDate', 'lastProcessedDate', 'targetDate'];
+
+      if (data.accounts?.length) {
+        await db.accounts.bulkAdd(data.accounts.map((a: Record<string, unknown>) => parseDates(a, dateFields)));
+      }
+      if (data.scheduledItems?.length) {
+        await db.scheduledItems.bulkAdd(data.scheduledItems.map((i: Record<string, unknown>) => parseDates(i, dateFields)));
+      }
+      if (data.creditCards?.length) {
+        await db.creditCards.bulkAdd(data.creditCards.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
+      }
+      if (data.wishlistItems?.length) {
+        await db.wishlistItems.bulkAdd(data.wishlistItems.map((w: Record<string, unknown>) => parseDates(w, dateFields)));
+      }
+      if (data.categories?.length) {
+        await db.categories.bulkAdd(data.categories.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
+      }
+
+      const counts = [
+        data.accounts?.length ? `${data.accounts.length} accounts` : null,
+        data.scheduledItems?.length ? `${data.scheduledItems.length} items` : null,
+        data.creditCards?.length ? `${data.creditCards.length} cards` : null,
+        data.wishlistItems?.length ? `${data.wishlistItems.length} wishlist` : null,
+        data.categories?.length ? `${data.categories.length} categories` : null,
+      ].filter(Boolean).join(', ');
+
+      setRestoreMsg(`Restored: ${counts}`);
+      await refresh();
+      setTimeout(() => setRestoreMsg(null), 3000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Import failed — invalid file');
+      setError(err instanceof Error ? err.message : 'Import failed — invalid JSON file');
     } finally {
       setRestoring(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  }, []);
+
+  // ---- Paste CSV Import: scheduled items only ----
+  const handleParsePaste = useCallback(() => {
+    const parsed = parseScheduledCSV(pasteText);
+    setPastePreview(parsed);
+    setPasteStep('preview');
+  }, [pasteText]);
+
+  const handleImportPaste = useCallback(async () => {
+    const validRows = pastePreview.filter((r) => r.valid);
+    if (validRows.length === 0) return;
+
+    setImportingCsv(true);
+    setError(null);
+
+    try {
+      const db = getDB();
+      const now = new Date();
+
+      // Resolve account and category names to IDs
+      const allAccounts = await db.accounts.toArray();
+      const defaultAccount = allAccounts[0];
+      if (!defaultAccount) throw new Error('No account found — create one first');
+      const accountByName = new Map(allAccounts.map((a) => [a.name.toLowerCase(), a]));
+
+      const allCategories = await db.categories.toArray();
+      const catByName = new Map(allCategories.map((c) => [c.name.toLowerCase(), c]));
+
+      const items: ScheduledItem[] = validRows.map((row) => {
+        const account = row.accountName
+          ? accountByName.get(row.accountName.toLowerCase()) ?? defaultAccount
+          : defaultAccount;
+        const category = row.categoryName
+          ? catByName.get(row.categoryName.toLowerCase())
+          : undefined;
+
+        return {
+          id: crypto.randomUUID(),
+          accountId: account.id,
+          type: row.type,
+          amount: row.amount,
+          description: row.description,
+          categoryId: category?.id ?? undefined,
+          recurrence: row.recurrence,
+          startDate: new Date(row.dateStr + 'T12:00:00'),
+          endDate: null,
+          isActive: true,
+          lastProcessedDate: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+      });
+
+      await db.scheduledItems.bulkAdd(items);
+      setRestoreMsg(`Imported ${items.length} scheduled items`);
+      await refresh();
+      setTimeout(() => setRestoreMsg(null), 3000);
+
+      // Reset paste state
+      setShowPasteImport(false);
+      setPasteText('');
+      setPastePreview([]);
+      setPasteStep('input');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'CSV import failed');
+    } finally {
+      setImportingCsv(false);
+    }
+  }, [pastePreview, refresh]);
+
+  const handleClosePasteImport = useCallback(() => {
+    setShowPasteImport(false);
+    setPasteText('');
+    setPastePreview([]);
+    setPasteStep('input');
   }, []);
 
   if (!open) return null;
@@ -741,11 +746,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 Blank JSON template to fill in and upload on another device
               </p>
 
-              {/* Restore from file */}
+              {/* Restore from JSON file */}
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".json,.csv"
+                accept=".json,application/json"
                 onChange={handleRestore}
                 className="hidden"
                 id="restore-file-input"
@@ -755,10 +760,10 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 disabled={restoring}
                 className="w-full px-4 py-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 font-medium text-sm hover:bg-amber-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                {restoring ? 'Importing...' : '📥 Import / Restore (JSON or CSV)'}
+                {restoring ? 'Importing...' : '📥 Restore from JSON Backup'}
               </button>
               <p className="text-xs text-amber-600 text-center">
-                ⚠️ JSON replaces all data. CSV adds items only.
+                ⚠️ Replaces all data with backup contents
               </p>
 
               {restoreMsg && (
@@ -768,10 +773,141 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
               )}
             </div>
           </div>
+
+          {/* Paste CSV Import Section */}
+          <div className="border-t border-gray-100 pt-4 mt-4">
+            <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-3">
+              Paste Scheduled Items (CSV)
+            </h3>
+
+            {!showPasteImport ? (
+              <button
+                onClick={() => setShowPasteImport(true)}
+                className="w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 font-medium text-sm hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+              >
+                ✏️ Paste CSV Data to Add Items
+              </button>
+            ) : pasteStep === 'input' ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">
+                    Paste CSV Data
+                  </label>
+                  <textarea
+                    value={pasteText}
+                    onChange={(e) => setPasteText(e.target.value)}
+                    placeholder="Date,Description,Type,Amount,Account,Category,Recurrence&#10;2024-01-15,Rent,expense,1500.00,Checking,,monthly&#10;2024-01-20,Paycheck,income,3000.00,Checking,,biweekly"
+                    rows={6}
+                    className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm font-mono outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 resize-y"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleClosePasteImport}
+                    className="flex-1 px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleParsePaste}
+                    disabled={!pasteText.trim()}
+                    className="flex-1 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    Preview
+                  </button>
+                </div>
+
+                <div className="text-xs text-gray-400 space-y-1">
+                  <p><strong>Columns:</strong> Date, Description, Type, Amount, Account, Category, Recurrence</p>
+                  <p>Type &amp; Category are optional (default: expense / none). Amount in dollars.</p>
+                  <p>Auto-detects: commas, tabs, or semicolons. Handles quoted fields.</p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm text-gray-600">
+                    {pastePreview.filter((r) => r.valid).length} of {pastePreview.length} rows ready
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => { setPasteStep('input'); setPastePreview([]); }}
+                    className="text-sm text-blue-600 hover:underline"
+                  >
+                    Edit pasted data
+                  </button>
+                </div>
+
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {pastePreview.map((row, i) => (
+                    <div
+                      key={i}
+                      className={`p-2.5 rounded-lg border text-sm ${
+                        row.valid ? 'border-gray-200 bg-white' : 'border-red-200 bg-red-50'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-gray-900 truncate">
+                          {row.description || 'Unnamed'}
+                        </span>
+                        {!row.valid && (
+                          <span className="text-xs text-red-600 ml-2 shrink-0">{row.error}</span>
+                        )}
+                      </div>
+                      {row.valid && (
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {row.dateStr} • ${(row.amount / 100).toFixed(2)} • {row.type} • {row.recurrence}
+                          {row.accountName ? ` • ${row.accountName}` : ''}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={handleClosePasteImport}
+                    className="flex-1 px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleImportPaste}
+                    disabled={importingCsv || pastePreview.filter((r) => r.valid).length === 0}
+                    className="flex-1 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {importingCsv ? 'Importing...' : `Import ${pastePreview.filter((r) => r.valid).length} Items`}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
+}
+
+// ---- CSV Export Helpers ----
+
+function escapeCSV(value: string): string {
+  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function formatCSVDate(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 // ---- Account Add/Edit Form ----
@@ -912,43 +1048,98 @@ function AccountForm({ editingAccount, onSave, onCancel }: AccountFormProps) {
   );
 }
 
-// ---- CSV Helpers ----
+// ---- Paste CSV Import Types & Helpers ----
 
-function escapeCSV(value: string): string {
-  if (value.includes(',') || value.includes('"') || value.includes('\n')) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
+interface PastePreviewRow {
+  dateStr: string;
+  description: string;
+  type: 'income' | 'expense' | 'transfer';
+  amount: number; // cents
+  accountId: string;
+  accountName: string;
+  categoryId?: string;
+  categoryName: string;
+  recurrence: ScheduledItem['recurrence'];
+  valid: boolean;
+  error?: string;
 }
 
-function formatCSVDate(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
+function parseScheduledCSV(text: string): PastePreviewRow[] {
+  if (!text || !text.trim()) return [];
 
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let current = '';
-  let inQuotes = false;
+  const normalized = normalizeLineEndings(text);
+  const delimiter = detectDelimiter(text);
+  const lines = normalized.split('\n').map((l) => l.trim()).filter(Boolean);
 
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    if (char === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++; // skip escaped quote
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === ',' && !inQuotes) {
-      result.push(current);
-      current = '';
-    } else {
-      current += char;
+  if (lines.length < 2) return [];
+
+  // Parse header to find column positions by name
+  const headerCols = parseDelimitedLine(lines[0], delimiter).map((h) =>
+    h.toLowerCase().replace(/^"|"$/g, '').trim()
+  );
+
+  const dateIdx = headerCols.findIndex((h) => h.includes('date'));
+  const descIdx = headerCols.findIndex((h) => h.includes('desc'));
+  const typeIdx = headerCols.findIndex((h) => h === 'type');
+  const amountIdx = headerCols.findIndex((h) => h.includes('amount'));
+  const accountIdx = headerCols.findIndex((h) => h.includes('account'));
+  const categoryIdx = headerCols.findIndex((h) => h.includes('category') || h.includes('cat'));
+  const recurrenceIdx = headerCols.findIndex((h) => h.includes('recur') || h.includes('frequency'));
+
+  // If no recognizable headers, assume positional order
+  const usePositional = dateIdx === -1 && amountIdx === -1 && descIdx === -1;
+
+  // We need account and category lookups, but those are async (DB calls).
+  // For preview, we store names; actual IDs are resolved at import time.
+  // However, to show account/category names in preview and resolve IDs at import,
+  // we do a synchronous best-effort here. The real resolution happens in handleImportPaste.
+  // For simplicity, we return preview rows with names and resolve IDs at import.
+
+  const rows: PastePreviewRow[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseDelimitedLine(lines[i], delimiter);
+
+    if (cols.length < 3) {
+      rows.push({
+        dateStr: '', description: `Row ${i}`, type: 'expense', amount: 0,
+        accountId: '', accountName: '', categoryName: '', recurrence: 'once',
+        valid: false, error: `Not enough columns (got ${cols.length})`,
+      });
+      continue;
     }
+
+    const dateStr = usePositional ? safeCell(cols, 0) : safeCell(cols, dateIdx >= 0 ? dateIdx : 0);
+    const description = usePositional ? safeCell(cols, 1) : safeCell(cols, descIdx >= 0 ? descIdx : 1);
+    const typeRaw = usePositional ? safeCell(cols, 2, 'expense') : safeCell(cols, typeIdx >= 0 ? typeIdx : 2, 'expense');
+    const amountRaw = usePositional ? safeCell(cols, 3) : safeCell(cols, amountIdx >= 0 ? amountIdx : 3);
+    const accountName = usePositional ? safeCell(cols, 4) : (accountIdx >= 0 ? safeCell(cols, accountIdx) : '');
+    const categoryName = usePositional ? safeCell(cols, 5) : (categoryIdx >= 0 ? safeCell(cols, categoryIdx) : '');
+    const recurrenceRaw = usePositional ? safeCell(cols, 6, 'once') : (recurrenceIdx >= 0 ? safeCell(cols, recurrenceIdx, 'once') : 'once');
+
+    const type = (['income', 'expense', 'transfer'].includes(typeRaw.toLowerCase()) ? typeRaw.toLowerCase() : 'expense') as 'income' | 'expense' | 'transfer';
+    const amount = dollarsToCents(amountRaw, NaN);
+    const recurrence = (['once', 'weekly', 'biweekly', 'monthly'].includes(recurrenceRaw.toLowerCase()) ? recurrenceRaw.toLowerCase() : 'once') as ScheduledItem['recurrence'];
+
+    let error: string | undefined;
+    if (!dateStr) error = 'Missing date';
+    else if (!description) error = 'Missing description';
+    else if (isNaN(amount)) error = 'Invalid amount';
+
+    rows.push({
+      dateStr,
+      description,
+      type,
+      amount: isNaN(amount) ? 0 : amount,
+      accountId: '', // resolved at import
+      accountName,
+      categoryId: undefined,
+      categoryName,
+      recurrence,
+      valid: !error,
+      error,
+    });
   }
-  result.push(current);
-  return result;
+
+  return rows;
 }

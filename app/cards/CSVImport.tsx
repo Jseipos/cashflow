@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { useCards } from '@/lib/context';
 import type { CreditCard } from '@/lib/types';
+import { normalizeLineEndings, detectDelimiter, parseDelimitedLine, safeCell, safeFloat, safeInt, dollarsToCents } from '@/lib/csv-utils';
 
 interface CSVImportProps {
   open: boolean;
@@ -28,25 +29,17 @@ const CARD_COLORS = [
 
 export function CSVImport({ open, onClose }: CSVImportProps) {
   const { bulkAddCards } = useCards();
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [pasteText, setPasteText] = useState('');
   const [rows, setRows] = useState<ParsedRow[]>([]);
   const [importing, setImporting] = useState(false);
-  const [step, setStep] = useState<'upload' | 'preview'>('upload');
+  const [step, setStep] = useState<'paste' | 'preview'>('paste');
 
   if (!open) return null;
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = ev.target?.result as string;
-      const parsed = parseCSV(text);
-      setRows(parsed);
-      setStep('preview');
-    };
-    reader.readAsText(file);
+  const handleParse = () => {
+    const parsed = parseCardCSV(pasteText);
+    setRows(parsed);
+    setStep('preview');
   };
 
   const handleImport = async () => {
@@ -82,8 +75,8 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
 
   const handleClose = () => {
     setRows([]);
-    setStep('upload');
-    if (fileRef.current) fileRef.current.value = '';
+    setPasteText('');
+    setStep('paste');
     onClose();
   };
 
@@ -117,10 +110,10 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
             </button>
           </div>
 
-          {step === 'upload' ? (
+          {step === 'paste' ? (
             <div className="space-y-4">
               <p className="text-sm text-gray-600">
-                Upload a CSV file with your credit card details. Download the template below to get started.
+                Copy your credit card data from a spreadsheet and paste it below. Tab or comma separated.
               </p>
 
               <button
@@ -135,26 +128,35 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
 
               <div className="relative">
                 <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-200" /></div>
-                <div className="relative flex justify-center text-xs"><span className="bg-white px-2 text-gray-400">then upload</span></div>
+                <div className="relative flex justify-center text-xs"><span className="bg-white px-2 text-gray-400">then paste below</span></div>
               </div>
 
-              <label className="block w-full px-4 py-8 rounded-lg border-2 border-dashed border-gray-300 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 transition-colors">
-                <svg className="mx-auto mb-2 text-gray-400" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
-                </svg>
-                <span className="text-sm text-gray-500">Tap to select CSV file</span>
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept=".csv"
-                  onChange={handleFile}
-                  className="hidden"
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">
+                  Paste Credit Card Data
+                </label>
+                <textarea
+                  value={pasteText}
+                  onChange={(e) => setPasteText(e.target.value)}
+                  placeholder="Name,Balance,APR,Minimum Payment,Credit Limit,Statement Date,Due Date&#10;Chase Sapphire,5000.00,24.99,150.00,15000.00,1,15"
+                  rows={6}
+                  className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm font-mono outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 resize-y"
+                  autoFocus
                 />
-              </label>
+              </div>
+
+              <button
+                onClick={handleParse}
+                disabled={!pasteText.trim()}
+                className="w-full px-4 py-2.5 rounded-lg bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 transition-colors disabled:opacity-50"
+              >
+                Preview Data
+              </button>
 
               <div className="text-xs text-gray-400 space-y-1">
                 <p><strong>Expected columns:</strong> Name, Balance, APR, Minimum Payment, Credit Limit, Statement Date, Due Date</p>
                 <p>Dollar amounts in dollars (e.g., 5000.00). APR as percentage (e.g., 24.99). Dates as day of month (1-31).</p>
+                <p>Auto-detects: commas, tabs, or semicolons. Handles quoted fields.</p>
               </div>
             </div>
           ) : (
@@ -164,10 +166,10 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
                   {rows.filter((r) => r.valid).length} of {rows.length} rows ready to import
                 </p>
                 <button
-                  onClick={() => { setStep('upload'); setRows([]); if (fileRef.current) fileRef.current.value = ''; }}
+                  onClick={() => { setStep('paste'); setRows([]); }}
                   className="text-sm text-blue-600 hover:underline"
                 >
-                  Choose different file
+                  Edit pasted data
                 </button>
               </div>
 
@@ -218,20 +220,44 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
   );
 }
 
-function parseCSV(text: string): ParsedRow[] {
-  // Normalize line endings (Windows \r\n, Mac \r, Unix \n)
-  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+/**
+ * Parse pasted text into card rows.
+ * Handles comma, tab, semicolon delimiters and quoted fields.
+ */
+function parseCardCSV(text: string): ParsedRow[] {
+  if (!text || !text.trim()) return [];
+
+  const normalized = normalizeLineEndings(text);
+  const delimiter = detectDelimiter(text);
   const lines = normalized.split('\n').map((l) => l.trim()).filter(Boolean);
+
   if (lines.length < 2) return [];
 
-  // Skip header row
+  // Parse header to find column positions
+  const headerCols = parseDelimitedLine(lines[0], delimiter).map((h) =>
+    h.toLowerCase().replace(/^"|"$/g, '').trim()
+  );
+
+  const nameIdx = headerCols.findIndex((h) => h.includes('name'));
+  const balanceIdx = headerCols.findIndex((h) => h.includes('balance'));
+  const aprIdx = headerCols.findIndex((h) => h.includes('apr'));
+  const minIdx = headerCols.findIndex((h) => h.includes('min'));
+  const limitIdx = headerCols.findIndex((h) => h.includes('limit') || h.includes('credit'));
+  const stmtIdx = headerCols.findIndex((h) => h.includes('statement') || h === 'stmt');
+  const dueIdx = headerCols.findIndex((h) => h.includes('due'));
+
+  // If no recognizable headers, assume positional (Name, Balance, APR, Min, Limit, Stmt, Due)
+  const usePositional = nameIdx === -1 && balanceIdx === -1;
+
   const rows: ParsedRow[] = [];
 
   for (let i = 1; i < lines.length; i++) {
-    const cols = parseCSVLine(lines[i]);
-    if (cols.length < 7) {
+    const cols = parseDelimitedLine(lines[i], delimiter);
+
+    // Need at least 7 columns for positional, or at least 1 for header-mapped
+    if (usePositional && cols.length < 7) {
       rows.push({
-        name: cols[0] || `Row ${i}`,
+        name: safeCell(cols, 0, `Row ${i}`),
         balance: 0, apr: 0, minimumPayment: 0, creditLimit: 0,
         statementDate: 1, dueDate: 15,
         valid: false,
@@ -240,17 +266,27 @@ function parseCSV(text: string): ParsedRow[] {
       continue;
     }
 
-    const [name, balanceStr, aprStr, minStr, limitStr, stmtStr, dueStr] = cols;
+    if (!usePositional && cols.length < 1) {
+      rows.push({
+        name: `Row ${i}`,
+        balance: 0, apr: 0, minimumPayment: 0, creditLimit: 0,
+        statementDate: 1, dueDate: 15,
+        valid: false,
+        error: 'Empty row',
+      });
+      continue;
+    }
 
-    const balance = Math.round(parseFloat(balanceStr) * 100);
-    const apr = parseFloat(aprStr);
-    const minimumPayment = Math.round(parseFloat(minStr) * 100);
-    const creditLimit = Math.round(parseFloat(limitStr) * 100);
-    const statementDate = parseInt(stmtStr);
-    const dueDate = parseInt(dueStr);
+    const name = usePositional ? safeCell(cols, 0) : safeCell(cols, nameIdx >= 0 ? nameIdx : 0);
+    const balance = usePositional ? dollarsToCents(safeCell(cols, 1)) : dollarsToCents(safeCell(cols, balanceIdx >= 0 ? balanceIdx : 1));
+    const apr = usePositional ? safeFloat(safeCell(cols, 2)) : safeFloat(safeCell(cols, aprIdx >= 0 ? aprIdx : 2));
+    const minimumPayment = usePositional ? dollarsToCents(safeCell(cols, 3)) : dollarsToCents(safeCell(cols, minIdx >= 0 ? minIdx : 3));
+    const creditLimit = usePositional ? dollarsToCents(safeCell(cols, 4)) : dollarsToCents(safeCell(cols, limitIdx >= 0 ? limitIdx : 4));
+    const statementDate = usePositional ? safeInt(safeCell(cols, 5, '1')) : safeInt(safeCell(cols, stmtIdx >= 0 ? stmtIdx : 5, '1'));
+    const dueDate = usePositional ? safeInt(safeCell(cols, 6, '15')) : safeInt(safeCell(cols, dueIdx >= 0 ? dueIdx : 6, '15'));
 
     let error: string | undefined;
-    if (!name?.trim()) error = 'Missing name';
+    if (!name) error = 'Missing name';
     else if (isNaN(balance) || balance < 0) error = 'Invalid balance';
     else if (isNaN(apr) || apr < 0 || apr > 100) error = 'Invalid APR';
     else if (isNaN(minimumPayment) || minimumPayment < 0) error = 'Invalid min payment';
@@ -259,7 +295,7 @@ function parseCSV(text: string): ParsedRow[] {
     else if (isNaN(dueDate) || dueDate < 1 || dueDate > 31) error = 'Invalid due date';
 
     rows.push({
-      name: name?.trim() || '',
+      name,
       balance: isNaN(balance) ? 0 : balance,
       apr: isNaN(apr) ? 0 : apr,
       minimumPayment: isNaN(minimumPayment) ? 0 : minimumPayment,
@@ -272,37 +308,4 @@ function parseCSV(text: string): ParsedRow[] {
   }
 
   return rows;
-}
-
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let current = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (inQuotes) {
-      if (ch === '"') {
-        if (i + 1 < line.length && line[i + 1] === '"') {
-          current += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        current += ch;
-      }
-    } else {
-      if (ch === '"') {
-        inQuotes = true;
-      } else if (ch === ',') {
-        result.push(current.trim());
-        current = '';
-      } else {
-        current += ch;
-      }
-    }
-  }
-  result.push(current.trim());
-  return result;
 }
