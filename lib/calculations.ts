@@ -5,7 +5,6 @@ import {
   isSameDay,
   addWeeks,
   addMonths,
-  differenceInCalendarDays,
 } from 'date-fns';
 import type {
   Account,
@@ -51,6 +50,7 @@ export function expandScheduledItem(
         amount: item.amount,
         description: item.description,
         accountId: item.accountId,
+        sourceType: item.sourceType,
       });
     }
 
@@ -100,7 +100,7 @@ export function projectBalances(
   // Group instances by day (ISO date string)
   const byDay = new Map<string, ScheduledInstance[]>();
   for (const inst of allInstances) {
-    const key = inst.date.toISOString();
+    const key = inst.date.toDateString();
     if (!byDay.has(key)) byDay.set(key, []);
     byDay.get(key)!.push(inst);
   }
@@ -111,7 +111,7 @@ export function projectBalances(
 
   for (let i = 0; i < days; i++) {
     const date = addDays(start, i);
-    const key = date.toISOString();
+    const key = date.toDateString();
     const dayItems = byDay.get(key) ?? [];
 
     // Apply each item

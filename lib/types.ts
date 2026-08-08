@@ -1,4 +1,4 @@
-// Core types for Cash Flow Calendar — Phase 1 MVP
+// Core types for Cash Flow Calendar — Phase 1 + Phase 2
 
 export interface Account {
   id: string;
@@ -29,6 +29,10 @@ export interface ScheduledItem {
   isActive: boolean;
   lastProcessedDate?: Date | null;
 
+  // Phase 2: source tracking for auto-generated items
+  sourceId?: string; // ID of the CreditCard or WishlistItem that generated this
+  sourceType?: 'card' | 'payoff' | 'wishlist';
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -42,6 +46,7 @@ export interface ScheduledInstance {
   amount: number; // cents
   description: string;
   accountId: string;
+  sourceType?: 'card' | 'payoff' | 'wishlist';
 }
 
 // Running balance for a single day
@@ -55,3 +60,65 @@ export interface DayBalance {
 
 export type RecurrenceType = 'once' | 'weekly' | 'biweekly' | 'monthly';
 export type ItemType = 'income' | 'expense' | 'transfer';
+
+// Phase 2: Credit Card
+export interface CreditCard {
+  id: string;
+  name: string;
+  balance: number; // cents
+  apr: number; // percentage (e.g., 24.99)
+  minimumPayment: number; // cents
+  creditLimit: number; // cents
+  statementDate: number; // day of month (1-31)
+  dueDate: number; // day of month (1-31)
+  color: string;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Phase 2: Wishlist Item
+export interface WishlistItem {
+  id: string;
+  name: string;
+  estimatedCost: number; // cents
+  priority: number; // 1 = highest
+  monthlySavings: number; // cents — how much to save per month toward this
+  targetDate?: Date | null; // optional target date
+  savedSoFar: number; // cents
+  isActive: boolean;
+  isPurchased: boolean;
+  savingsDay: number; // day of month for savings contribution (1-28, default 1)
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Phase 2: Payoff calculation result types
+export interface PayoffResultCard {
+  cardId: string;
+  cardName: string;
+  startingBalance: number; // cents
+  payoffMonth: number; // months from start
+  payoffDate: Date;
+  totalInterestPaid: number; // cents
+  payments: AmortizationPayment[];
+}
+
+export interface AmortizationPayment {
+  month: number;
+  date: Date;
+  payment: number; // cents (total payment for this card this month)
+  interest: number; // cents
+  principal: number; // cents
+  balanceAfter: number; // cents
+}
+
+export interface PayoffPlanResult {
+  strategy: 'avalanche' | 'snowball';
+  extraPayment: number; // cents per month
+  cards: PayoffResultCard[];
+  totalInterest: number; // cents
+  totalPaid: number; // cents
+  debtFreeDate: Date;
+  totalMonths: number;
+}
