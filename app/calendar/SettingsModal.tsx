@@ -24,7 +24,7 @@ const ACCOUNT_COLORS = ['#3b82f6', '#22c55e', '#f97316', '#a855f7', '#ec4899', '
 type ExportRange = '30d' | '90d' | 'all' | 'custom';
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
-  const { accounts, selectedAccount, updateAccount, addAccount, deleteAccount, scheduledItems } = useCashflow();
+  const { accounts, selectedAccount, updateAccount, addAccount, deleteAccount, scheduledItems, refresh } = useCashflow();
 
   const [balance, setBalance] = useState('');
   const [threshold, setThreshold] = useState('');
@@ -402,7 +402,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
         await db.scheduledItems.bulkAdd(items);
         setRestoreMsg(`Imported ${items.length} scheduled items from CSV`);
-        setTimeout(() => window.location.reload(), 1500);
+        await refresh();
+        setTimeout(() => setRestoreMsg(null), 3000);
       } else {
         // ---- JSON Import: full backup ----
         const data = JSON.parse(text);
@@ -459,7 +460,8 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         ].filter(Boolean).join(', ');
 
         setRestoreMsg(`Restored: ${counts}`);
-        setTimeout(() => window.location.reload(), 1500);
+        await refresh();
+        setTimeout(() => setRestoreMsg(null), 3000);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed — invalid file');
