@@ -17,7 +17,7 @@ interface CardFormProps {
 
 export function CardForm({ open, editCard, onClose }: CardFormProps) {
   const { addCard, updateCard } = useCards();
-  const { selectedAccount, addScheduledItem, updateScheduledItem, scheduledItems } = useCashflow();
+  const { accounts, selectedAccount, addScheduledItem, updateScheduledItem, scheduledItems } = useCashflow();
 
   const [name, setName] = useState('');
   const [balance, setBalance] = useState('');
@@ -27,6 +27,7 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
   const [statementDate, setStatementDate] = useState('1');
   const [dueDate, setDueDate] = useState('15');
   const [color, setColor] = useState(CARD_COLORS[0]);
+  const [paymentAccountId, setPaymentAccountId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -51,8 +52,11 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
       setDueDate('15');
       setColor(CARD_COLORS[Math.floor(Math.random() * CARD_COLORS.length)]);
     }
+    // Default payment account to selected account or first available
+    const defaultAcct = selectedAccount?.id ?? accounts[0]?.id ?? '';
+    setPaymentAccountId(defaultAcct);
     setError(null);
-  }, [open, editCard]);
+  }, [open, editCard, selectedAccount, accounts]);
 
   if (!open) return null;
 
@@ -99,7 +103,8 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
       }
 
       // Sync minimum payment to calendar
-      if (selectedAccount) {
+      const paymentAccount = accounts.find((a) => a.id === paymentAccountId) ?? selectedAccount;
+      if (paymentAccount) {
         // Remove old scheduled item for this card if editing
         if (editCard) {
           const oldItem = scheduledItems.find(
@@ -115,10 +120,10 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
               updatedAt: now,
             });
           } else {
-            await createMinPaymentItem(card, selectedAccount.id, addScheduledItem);
+            await createMinPaymentItem(card, paymentAccount.id, addScheduledItem);
           }
         } else {
-          await createMinPaymentItem(card, selectedAccount.id, addScheduledItem);
+          await createMinPaymentItem(card, paymentAccount.id, addScheduledItem);
         }
       }
 
@@ -253,6 +258,35 @@ export function CardForm({ open, editCard, onClose }: CardFormProps) {
                   value={dueDate} onChange={(e) => setDueDate(e.target.value)}
                   className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-gray-900"
                 />
+              </div>
+            </div>
+
+            {/* Payment Account */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">
+                Payment Account
+              </label>
+              <p className="text-xs text-gray-500 mb-2">Which account do payments come from?</p>
+              <div className="space-y-1.5">
+                {accounts.filter((a) => a.isActive).map((acct) => (
+                  <button
+                    key={acct.id}
+                    type="button"
+                    onClick={() => setPaymentAccountId(acct.id)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors ${
+                      paymentAccountId === acct.id
+                        ? 'border-blue-500 bg-blue-50 text-blue-700'
+                        : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    <div
+                      className="w-3 h-3 rounded-full shrink-0"
+                      style={{ backgroundColor: acct.color }}
+                    />
+                    <span>{acct.name}</span>
+                    <span className="text-xs text-gray-400 ml-auto capitalize">{acct.type}</span>
+                  </button>
+                ))}
               </div>
             </div>
 
