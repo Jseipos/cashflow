@@ -219,7 +219,9 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
 }
 
 function parseCSV(text: string): ParsedRow[] {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  // Normalize line endings (Windows \r\n, Mac \r, Unix \n)
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n').map((l) => l.trim()).filter(Boolean);
   if (lines.length < 2) return [];
 
   // Skip header row
@@ -233,7 +235,7 @@ function parseCSV(text: string): ParsedRow[] {
         balance: 0, apr: 0, minimumPayment: 0, creditLimit: 0,
         statementDate: 1, dueDate: 15,
         valid: false,
-        error: 'Not enough columns',
+        error: `Not enough columns (got ${cols.length}, need 7)`,
       });
       continue;
     }
