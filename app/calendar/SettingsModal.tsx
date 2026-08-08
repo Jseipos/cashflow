@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useCashflow } from '@/lib/context';
 import { formatCurrency } from '@/lib/calculations';
-import { getDB, getAllScheduledItems, getAllAccounts, getAllCreditCards, getAllCategories } from '@/lib/db';
+import { getDB, getAllScheduledItems, getAllAccounts, getAllCreditCards, getAllCategories, getAllWishlistItems } from '@/lib/db';
+import type { WishlistItem, Category, CreditCard, ScheduledItem } from '@/lib/types';
 import type { Account } from '@/lib/types';
 
 interface SettingsModalProps {
@@ -37,6 +38,12 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [exportStart, setExportStart] = useState('');
   const [exportEnd, setExportEnd] = useState('');
   const [exporting, setExporting] = useState(false);
+
+  // Full backup state
+  const [backingUp, setBackingUp] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreMsg, setRestoreMsg] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open && selectedAccount) {
@@ -185,6 +192,212 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       setExporting(false);
     }
   }, [exportRange, exportStart, exportEnd]);
+
+  // ---- Full Backup (JSON) ----
+  const handleFullBackup = useCallback(async () => {
+    setBackingUp(true);
+    try {
+      const db = getDB();
+      const [accounts, scheduledItems, creditCards, wishlistItems, categories] = await Promise.all([
+        db.accounts.toArray(),
+        db.scheduledItems.toArray(),
+        db.creditCards.toArray(),
+        db.wishlistItems.toArray(),
+        db.categories.toArray(),
+      ]);
+
+      const backup = {
+        version: 3,
+        exportedAt: new Date().toISOString(),
+        accounts,
+        scheduledItems,
+        creditCards,
+        wishlistItems,
+        categories,
+      };
+
+      const json = JSON.stringify(backup, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `cashflow-backup-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Backup failed');
+    } finally {
+      setBackingUp(false);
+    }
+  }, []);
+
+  // ---- Download Template ----
+  const handleDownloadTemplate = useCallback(() => {
+    const now = new Date().toISOString();
+    const template = {
+      version: 3,
+      exportedAt: now,
+      _instructions: 'Fill in your data below. Amounts are in cents (multiply dollars by 100). Dates in ISO format. Leave arrays empty [] if not needed. Import this file via the Restore button.',
+      accounts: [
+        {
+          id: 'account-1',
+          name: 'Checking',
+          type: 'checking',
+          currentBalance: 0,
+          lowBalanceThreshold: 10000,
+          color: '#3b82f6',
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      scheduledItems: [
+        {
+          id: 'item-example-1',
+          accountId: 'account-1',
+          type: 'expense',
+          amount: 150000,
+          description: 'Rent',
+          categoryId: null,
+          recurrence: 'monthly',
+          startDate: now,
+          endDate: null,
+          isActive: true,
+          lastProcessedDate: null,
+          sourceId: null,
+          sourceType: null,
+          toAccountId: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      creditCards: [
+        {
+          id: 'card-example-1',
+          name: 'Chase Sapphire',
+          balance: 500000,
+          apr: 24.99,
+          minimumPayment: 15000,
+          creditLimit: 1500000,
+          statementDate: 1,
+          dueDate: 15,
+          color: '#3b82f6',
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      wishlistItems: [
+        {
+          id: 'wish-example-1',
+          name: 'New Laptop',
+          estimatedCost: 120000,
+          priority: 1,
+          monthlySavings: 20000,
+          targetDate: null,
+          savedSoFar: 0,
+          isActive: true,
+          isPurchased: false,
+          savingsDay: 1,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      categories: [],
+    };
+
+    const json = JSON.stringify(template, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'cashflow-import-template.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // ---- Restore from Backup ----
+  const handleRestore = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setRestoring(true);
+    setRestoreMsg(null);
+    setError(null);
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+
+      // Validate structure
+      if (!data.accounts || !Array.isArray(data.accounts)) {
+        throw new Error('Invalid backup file: missing accounts array');
+      }
+
+      const db = getDB();
+
+      // Clear existing data
+      await Promise.all([
+        db.accounts.clear(),
+        db.scheduledItems.clear(),
+        db.creditCards.clear(),
+        db.wishlistItems.clear(),
+        db.categories.clear(),
+      ]);
+
+      // Restore dates from strings
+      const parseDates = (obj: Record<string, unknown>, fields: string[]) => {
+        for (const f of fields) {
+          if (obj[f] && typeof obj[f] === 'string') {
+            obj[f] = new Date(obj[f] as string);
+          }
+        }
+        return obj;
+      };
+
+      const dateFields = ['createdAt', 'updatedAt', 'startDate', 'endDate', 'lastProcessedDate', 'targetDate'];
+
+      // Import data
+      if (data.accounts?.length) {
+        await db.accounts.bulkAdd(data.accounts.map((a: Record<string, unknown>) => parseDates(a, dateFields)));
+      }
+      if (data.scheduledItems?.length) {
+        await db.scheduledItems.bulkAdd(data.scheduledItems.map((i: Record<string, unknown>) => parseDates(i, dateFields)));
+      }
+      if (data.creditCards?.length) {
+        await db.creditCards.bulkAdd(data.creditCards.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
+      }
+      if (data.wishlistItems?.length) {
+        await db.wishlistItems.bulkAdd(data.wishlistItems.map((w: Record<string, unknown>) => parseDates(w, dateFields)));
+      }
+      if (data.categories?.length) {
+        await db.categories.bulkAdd(data.categories.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
+      }
+
+      const counts = [
+        data.accounts?.length ? `${data.accounts.length} accounts` : null,
+        data.scheduledItems?.length ? `${data.scheduledItems.length} items` : null,
+        data.creditCards?.length ? `${data.creditCards.length} cards` : null,
+        data.wishlistItems?.length ? `${data.wishlistItems.length} wishlist` : null,
+        data.categories?.length ? `${data.categories.length} categories` : null,
+      ].filter(Boolean).join(', ');
+
+      setRestoreMsg(`Restored: ${counts}`);
+
+      // Reload the page to refresh all contexts
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Restore failed — invalid file');
+    } finally {
+      setRestoring(false);
+      // Reset file input
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, []);
 
   if (!open) return null;
 
@@ -421,6 +634,64 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             <p className="text-xs text-gray-400 mt-2 text-center">
               Exports all scheduled items as a CSV file
             </p>
+          </div>
+
+          {/* Full Backup & Restore Section */}
+          <div className="border-t border-gray-100 pt-4 mt-4">
+            <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-3">
+              Backup & Sync
+            </h3>
+
+            <div className="space-y-2">
+              {/* Download full backup */}
+              <button
+                onClick={handleFullBackup}
+                disabled={backingUp}
+                className="w-full px-4 py-2.5 rounded-lg bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {backingUp ? 'Creating Backup...' : '📦 Export All Data (JSON)'}
+              </button>
+              <p className="text-xs text-gray-400 text-center">
+                Everything: accounts, items, cards, wishlist, categories
+              </p>
+
+              {/* Download template */}
+              <button
+                onClick={handleDownloadTemplate}
+                className="w-full px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 font-medium text-sm hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
+              >
+                📄 Download Import Template
+              </button>
+              <p className="text-xs text-gray-400 text-center">
+                Blank JSON template to fill in and upload on another device
+              </p>
+
+              {/* Restore from file */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json"
+                onChange={handleRestore}
+                className="hidden"
+                id="restore-file-input"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={restoring}
+                className="w-full px-4 py-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 font-medium text-sm hover:bg-amber-100 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {restoring ? 'Restoring...' : '📥 Import / Restore from File'}
+              </button>
+              <p className="text-xs text-amber-600 text-center">
+                ⚠️ This replaces ALL current data on this device
+              </p>
+
+              {restoreMsg && (
+                <div className="px-3 py-2 rounded-lg bg-green-50 text-green-700 text-sm text-center">
+                  ✅ {restoreMsg}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
