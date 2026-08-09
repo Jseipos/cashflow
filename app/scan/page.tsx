@@ -106,16 +106,31 @@ function ScanPageInner() {
     setOcrError(null);
 
     try {
+      // Preprocess the image for better OCR accuracy
+      const processedImageUrl = await preprocessImage(imageDataUrl);
+
       // Lazy-load Tesseract.js to avoid bundle bloat
       const Tesseract = await import('tesseract.js');
 
-      const result = await Tesseract.recognize(imageDataUrl, 'eng', {
+      // Create a worker so we can set custom Tesseract parameters
+      // that aren't available via the shorthand recognize() call.
+      const worker = await Tesseract.createWorker('eng', 1, {
         logger: (m: { status: string; progress: number }) => {
           if (m.status === 'recognizing text') {
             setOcrProgress(Math.round(m.progress * 100));
           }
         },
       });
+
+      await worker.setParameters({
+        tessedit_char_whitelist:
+          'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,/$#%&*()-+: ',
+        tessedit_pageseg_mode: Tesseract.PSM.SINGLE_COLUMN,
+        preserve_interword_spaces: '1',
+      });
+
+      const result = await worker.recognize(processedImageUrl);
+      await worker.terminate();
 
       const text = result.data.text;
       const parsedReceipt = parseReceiptText(text);
@@ -509,6 +524,67 @@ function ScanPageInner() {
   );
 }
 
+// ---- Image Preprocessing ----
+
+/**
+ * Preprocess a captured receipt image for better OCR accuracy.
+ * Converts to grayscale, boosts contrast, and applies binary thresholding —
+ * all of which help Tesseract parse thermal-printer receipt text.
+ */
+async function preprocessImage(imageDataUrl: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      // Scale up small images (Tesseract works better with larger input)
+      const maxDim = 2000;
+      let w = img.width;
+      let h = img.height;
+      if (w < maxDim && h < maxDim) {
+        const scale = Math.min(maxDim / w, maxDim / h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(imageDataUrl); // fallback to original
+        return;
+      }
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const data = imageData.data;
+
+      const contrast = 1.8; // contrast factor (~1.5-2.0 works well for receipts)
+
+      for (let i = 0; i < data.length; i += 4) {
+        // Grayscale conversion (luminance formula)
+        let gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+
+        // Contrast enhancement around 0.5 midpoint
+        gray = ((gray / 255 - 0.5) * contrast + 0.5) * 255;
+        gray = Math.max(0, Math.min(255, gray));
+
+        // Binary threshold — sharpens text edges for thermal receipts
+        gray = gray > 128 ? 255 : 0;
+
+        data[i] = gray;
+        data[i + 1] = gray;
+        data[i + 2] = gray;
+        // alpha unchanged
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => reject(new Error('Failed to load image for preprocessing'));
+    img.src = imageDataUrl;
+  });
+}
+
 // ---- Receipt Parsing Utilities ----
 
 function formatDateForInput(date: Date): string {
@@ -519,24 +595,119 @@ function formatDateForInput(date: Date): string {
 }
 
 /**
+ * Known store names for fuzzy merchant matching.
+ * If the OCR text is close to one of these, we use the clean name.
+ */
+const KNOWN_MERCHANTS = [
+  'Publix', 'Walmart', 'Target', 'Walgreens', 'CVS', 'Amazon', 'Costco',
+  "Sam's Club", 'Kroger', 'Aldi', "Trader Joe's", 'Whole Foods',
+  'Dollar Tree', 'Dollar General', 'Starbucks', "McDonald's",
+  'Chick-fil-A', 'Chipotle', 'Panera', "Dunkin'", 'Shell', 'Exxon',
+  'BP', 'Chevron', 'Wawa', 'RaceTrac', 'Circle K', '7-Eleven',
+  'Home Depot', "Lowe's", 'Best Buy', 'Apple Store', 'UPS', 'FedEx',
+  'USPS', 'Ulta', 'Sephora', 'Bath & Body Works', 'TJ Maxx',
+  'Marshalls', 'Ross', 'Old Navy', 'Gap', 'PetSmart', 'Petco',
+  'AutoZone', "O'Reilly", 'Advance Auto', 'Publix Pharmacy',
+  'Walgreens Pharmacy', 'CVS Pharmacy',
+];
+
+/**
+ * Levenshtein distance between two strings — used for fuzzy merchant matching.
+ */
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1].toLowerCase() === b[j - 1].toLowerCase() ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Try to match a raw OCR merchant string against the known store list.
+ * Returns the clean store name if a match is found with reasonable confidence,
+ * otherwise returns null.
+ */
+function fuzzyMatchMerchant(raw: string): string | null {
+  const cleaned = raw.replace(/[^A-Za-z0-9 ]/g, '').trim();
+  if (!cleaned) return null;
+
+  let bestMatch: string | null = null;
+  let bestScore = Infinity;
+
+  for (const known of KNOWN_MERCHANTS) {
+    // Check if the known store name appears as a substring (handles extra noise)
+    const knownClean = known.replace(/[^A-Za-z0-9 ]/g, '').toLowerCase();
+    const rawLower = cleaned.toLowerCase();
+
+    if (rawLower.includes(knownClean) || knownClean.includes(rawLower)) {
+      // Strong match — substring contains
+      return known;
+    }
+
+    // Also check if the first few chars of the raw match the known store
+    // (OCR sometimes garbles the end of a store name)
+    const minLen = Math.min(knownClean.length, rawLower.length);
+    if (minLen >= 3 && rawLower.slice(0, minLen) === knownClean.slice(0, minLen)) {
+      return known;
+    }
+
+    // Levenshtein distance for close-but-not-exact matches
+    const dist = levenshtein(rawLower, knownClean);
+    const maxAllowed = Math.max(2, Math.floor(knownClean.length * 0.3));
+    if (dist < bestScore && dist <= maxAllowed) {
+      bestScore = dist;
+      bestMatch = known;
+    }
+  }
+
+  return bestMatch;
+}
+
+/**
+ * Clean up a raw OCR merchant string when no fuzzy match is found.
+ * Removes special characters, trims, and title-cases the result.
+ */
+function cleanMerchantText(raw: string): string {
+  return raw
+    .replace(/[#*\|\\<>\[\]\{\}=_~`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w))
+    .join(' ');
+}
+
+/**
  * Parse OCR text from a receipt to extract amount, merchant, and date.
- * Uses common receipt patterns.
+ * Uses common receipt patterns with improved accuracy.
  */
 function parseReceiptText(text: string): ParsedReceipt {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
 
   // --- Amount parsing ---
-  // Look for lines with "TOTAL", "AMOUNT", "BALANCE", "GRAND TOTAL"
-  // or the last dollar amount on the receipt
   let amount: string | null = null;
 
+  // Priority 1: Lines explicitly containing "total" with a dollar amount
   const totalPatterns = [
-    /(?:grand\s+total|total\s+due|total\s+amount|total|amount\s+due|balance\s+due|sum)\s*:?\s*\$?\s*(\d+\.\d{2})/i,
+    /(?:grand\s+total|total\s+due|total\s+amount|amount\s+due|balance\s+due|total)\s*:?\s*\$?\s*(\d+\.\d{2})/i,
     /\$\s*(\d+\.\d{2})\s*(?:total|due|balance)/i,
   ];
 
+  // Lines that should NOT be considered as the total
+  const excludePatterns = /saved|savings|discount|change|subtotal|cash\s+tender/i;
+
   for (const pattern of totalPatterns) {
     for (const line of lines) {
+      if (excludePatterns.test(line)) continue;
       const match = line.match(pattern);
       if (match) {
         amount = match[1];
@@ -546,7 +717,33 @@ function parseReceiptText(text: string): ParsedReceipt {
     if (amount) break;
   }
 
-  // Fallback: find the largest dollar amount in the text (often the total)
+  // Priority 2: Last dollar amount in the receipt (totals are at the bottom)
+  if (!amount) {
+    const allAmounts: { value: number; lineIdx: number }[] = [];
+    const amountRegex = /\$\s*(\d+\.\d{2})/g;
+    let match: RegExpExecArray | null;
+    for (let i = 0; i < lines.length; i++) {
+      amountRegex.lastIndex = 0;
+      while ((match = amountRegex.exec(lines[i])) !== null) {
+        if (excludePatterns.test(lines[i])) continue;
+        allAmounts.push({ value: parseFloat(match[1]), lineIdx: i });
+      }
+      // Also try bare decimal numbers
+      const bareRegex = /\b(\d+\.\d{2})\b/g;
+      bareRegex.lastIndex = 0;
+      while ((match = bareRegex.exec(lines[i])) !== null) {
+        if (excludePatterns.test(lines[i])) continue;
+        allAmounts.push({ value: parseFloat(match[1]), lineIdx: i });
+      }
+    }
+    if (allAmounts.length > 0) {
+      // Pick the last amount (totals are usually at the bottom of the receipt)
+      const last = allAmounts[allAmounts.length - 1];
+      amount = last.value.toFixed(2);
+    }
+  }
+
+  // Priority 3: Fallback to largest amount (rare, but covers edge cases)
   if (!amount) {
     const allAmounts: number[] = [];
     const amountRegex = /\$\s*(\d+\.\d{2})/g;
@@ -554,35 +751,67 @@ function parseReceiptText(text: string): ParsedReceipt {
     while ((match = amountRegex.exec(text)) !== null) {
       allAmounts.push(parseFloat(match[1]));
     }
-    // Also try bare decimal numbers
     const bareAmountRegex = /\b(\d+\.\d{2})\b/g;
     while ((match = bareAmountRegex.exec(text)) !== null) {
       allAmounts.push(parseFloat(match[1]));
     }
     if (allAmounts.length > 0) {
-      // Pick the largest amount as the total (common for receipts)
       const largest = Math.max(...allAmounts);
       amount = largest.toFixed(2);
     }
   }
 
   // --- Merchant parsing ---
-  // Usually the first non-empty line, or the line before the first item
   let merchant: string | null = null;
+
   if (lines.length > 0) {
-    // Skip common header noise
-    const skipPatterns = /^(receipt|invoice|order|date|store|phone|address|www\.|http)/i;
-    const firstMeaningful = lines.find(
-      (l) => l.length > 2 && !skipPatterns.test(l) && !/^\d+$/.test(l) && l.length < 40,
-    );
-    if (firstMeaningful) {
-      // Clean up — remove trailing numbers/special chars
-      merchant = firstMeaningful.replace(/[#*]+/g, '').trim();
+    // Skip common header noise: dates, phone numbers, addresses, URLs, pure numbers
+    const skipPatterns = /^(receipt|invoice|order|date|store|phone|address|www\.|http|\d{3}\s|\d{10}|tel)/i;
+    const isNoise = (l: string) =>
+      skipPatterns.test(l) ||
+      /^\d+$/.test(l) ||
+      /^\d{3}[\-\s]?\d{3}[\-\s]?\d{4}$/.test(l) || // phone number
+      /\b\d{1,4}\s+\w+\s+(st|ave|rd|dr|blvd|ln|way|ct|pl)/i.test(l); // street address
+
+    // Look at the first 10 lines for the merchant name
+    const candidateLines = lines.slice(0, 10);
+
+    // First, try to fuzzy-match any of the top lines against known stores
+    for (const line of candidateLines) {
+      const fuzzy = fuzzyMatchMerchant(line);
+      if (fuzzy) {
+        merchant = fuzzy;
+        break;
+      }
+    }
+
+    // If no fuzzy match, use heuristics: ALL CAPS or Title Case, short, no numbers
+    if (!merchant) {
+      const firstMeaningful = candidateLines.find(
+        (l) =>
+          l.length > 2 &&
+          l.length < 30 &&
+          !isNoise(l) &&
+          !/\d/.test(l) && // store names usually don't have numbers
+          /^[A-Za-z\s&'.-]+$/.test(l), // only letters and basic punctuation
+      );
+      if (firstMeaningful) {
+        merchant = cleanMerchantText(firstMeaningful);
+      }
+    }
+
+    // Further fallback: first meaningful line (broader criteria)
+    if (!merchant) {
+      const firstMeaningful = lines.find(
+        (l) => l.length > 2 && !isNoise(l) && l.length < 40,
+      );
+      if (firstMeaningful) {
+        merchant = cleanMerchantText(firstMeaningful);
+      }
     }
   }
 
   // --- Date parsing ---
-  // Look for common date formats
   let date: string | null = null;
   const datePatterns = [
     /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/,

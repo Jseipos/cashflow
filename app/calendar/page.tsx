@@ -330,7 +330,7 @@ function CalendarPageInner() {
       {/* Floating add button */}
       <button
         onClick={handleAddButton}
-        className="fixed bottom-6 right-6 w-14 h-14 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 transition-colors flex items-center justify-center z-30"
+        className="fixed bottom-[calc(4rem+env(safe-area-inset-bottom)+0.5rem)] right-6 w-14 h-14 rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 transition-colors flex items-center justify-center z-30"
         aria-label="Add scheduled item"
       >
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
