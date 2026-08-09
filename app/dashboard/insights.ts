@@ -185,14 +185,25 @@ export function spendingOverview(
 // ---- Section: Cash Flow Health ----
 
 export function cashFlowHealth(
-  account: Account | null,
+  accounts: Account[],
   scheduledItems: ScheduledItem[],
 ): InsightSection {
   const insights: Insight[] = [];
   const now = new Date();
 
-  // Projected lowest balance in next 30 days
-  if (account) {
+  // Combined balance across all accounts
+  const totalBalance = accounts.reduce((s, a) => s + a.currentBalance, 0);
+  insights.push({
+    id: 'total-balance',
+    icon: '🏦',
+    title: 'Total Balance',
+    value: `$${(totalBalance / 100).toFixed(2)}`,
+    description: `Across ${accounts.length} account${accounts.length !== 1 ? 's' : ''}.`,
+    tone: totalBalance > 0 ? 'good' : 'alert',
+  });
+
+  // Projected lowest balance per account in next 30 days
+  for (const account of accounts) {
     const balances = projectBalances(account, scheduledItems, now, 30);
     let lowest = balances[0];
     for (const b of balances) {
@@ -200,38 +211,40 @@ export function cashFlowHealth(
     }
 
     const nearThreshold =
-      Math.abs(lowest.balance - account.lowBalanceThreshold) < 20000; // $200 in cents
+      Math.abs(lowest.balance - account.lowBalanceThreshold) < 20000;
 
     insights.push({
-      id: 'lowest-balance',
+      id: `lowest-balance-${account.id}`,
       icon: lowest.isBelowZero ? '🚨' : lowest.isLowBalance ? '⚠️' : '✅',
-      title: 'Projected Lowest Balance',
+      title: `${account.name} — Lowest Balance`,
       value: `$${(lowest.balance / 100).toFixed(2)}`,
       description: lowest.isBelowZero
-        ? `Your balance goes negative around ${format(lowest.date, 'MMM d')}.`
+        ? `${account.name} goes negative around ${format(lowest.date, 'MMM d')}.`
         : lowest.isLowBalance
-          ? `Drops below your safety threshold around ${format(lowest.date, 'MMM d')}.`
+          ? `${account.name} drops below your safety threshold around ${format(lowest.date, 'MMM d')}.`
           : `Lowest point around ${format(lowest.date, 'MMM d')}. You're in the clear.`,
       tone: lowest.isBelowZero ? 'alert' : lowest.isLowBalance ? 'warning' : 'good',
     });
 
     if (nearThreshold && !lowest.isBelowZero) {
       insights.push({
-        id: 'threshold-warning',
+        id: `threshold-warning-${account.id}`,
         icon: '💡',
-        title: 'Approaching Threshold',
+        title: `${account.name} — Approaching Threshold`,
         value: `$${(lowest.balance / 100).toFixed(2)}`,
-        description: `Heads up — your balance dips close to your safety threshold around ${format(lowest.date, 'MMM d')}.`,
+        description: `Heads up — ${account.name} dips close to your safety threshold around ${format(lowest.date, 'MMM d')}.`,
         tone: 'warning',
       });
     }
-  } else {
+  }
+
+  if (accounts.length === 0) {
     insights.push({
       id: 'no-account',
       icon: '🏦',
-      title: 'No Account Selected',
+      title: 'No Accounts',
       value: '—',
-      description: 'Select an account to see balance projections.',
+      description: 'Add an account to see balance projections.',
       tone: 'info',
     });
   }
@@ -380,7 +393,7 @@ export function smartNudges(
   scheduledItems: ScheduledItem[],
   categories: Category[],
   cards: CreditCard[],
-  account: Account | null,
+  accounts: Account[],
 ): InsightSection {
   const nudges: Insight[] = [];
   const now = new Date();
@@ -472,8 +485,8 @@ export function smartNudges(
     }
   }
 
-  // Nudge: Low balance approaching threshold
-  if (account) {
+  // Nudge: Low balance approaching threshold (check all accounts)
+  for (const account of accounts) {
     const balances = projectBalances(account, scheduledItems, now, 30);
     let lowest = balances[0];
     for (const b of balances) {
@@ -481,15 +494,15 @@ export function smartNudges(
     }
     if (
       !lowest.isBelowZero &&
-      Math.abs(lowest.balance - account.lowBalanceThreshold) < 20000 && // $200 in cents
+      Math.abs(lowest.balance - account.lowBalanceThreshold) < 20000 &&
       lowest.balance <= account.lowBalanceThreshold
     ) {
       nudges.push({
-        id: 'threshold-nudge',
+        id: `threshold-nudge-${account.id}`,
         icon: '⚠️',
-        title: 'Balance Near Threshold',
+        title: `${account.name} Near Threshold`,
         value: `$${(lowest.balance / 100).toFixed(2)}`,
-        description: `Heads up — your balance dips close to your safety threshold around ${format(lowest.date, 'MMM d')}.`,
+        description: `Heads up — ${account.name} dips close to your safety threshold around ${format(lowest.date, 'MMM d')}.`,
         tone: 'warning',
       });
     }

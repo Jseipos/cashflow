@@ -12,7 +12,7 @@ import {
 } from './insights';
 
 function DashboardPageInner() {
-  const { accounts, selectedAccount, scheduledItems, loading, error } = useCashflow();
+  const { accounts, scheduledItems, loading, error } = useCashflow();
   const { categories } = useCategories();
   const { cards } = useCards();
   const { items: wishlist } = useWishlist();
@@ -20,11 +20,11 @@ function DashboardPageInner() {
   const sections: InsightSection[] = useMemo(() => {
     return [
       spendingOverview(scheduledItems, categories),
-      cashFlowHealth(selectedAccount, scheduledItems),
+      cashFlowHealth(accounts, scheduledItems),
       debtAndSavings(cards, wishlist),
-      smartNudges(scheduledItems, categories, cards, selectedAccount),
+      smartNudges(scheduledItems, categories, cards, accounts),
     ];
-  }, [scheduledItems, categories, selectedAccount, cards, wishlist]);
+  }, [scheduledItems, categories, accounts, cards, wishlist]);
 
   if (loading) {
     return (
@@ -53,12 +53,10 @@ function DashboardPageInner() {
             </div>
             <h1 className="text-lg font-bold text-gray-900">Dashboard</h1>
           </div>
-          {selectedAccount && (
-            <div className="text-right">
-              <div className="text-xs text-gray-400">Account</div>
-              <div className="text-sm font-semibold text-gray-700">{selectedAccount.name}</div>
-            </div>
-          )}
+          <div className="text-right">
+            <div className="text-xs text-gray-400">Accounts</div>
+            <div className="text-sm font-semibold text-gray-700">{accounts.length} connected</div>
+          </div>
         </div>
       </header>
 
