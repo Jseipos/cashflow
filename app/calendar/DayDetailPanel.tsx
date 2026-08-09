@@ -149,7 +149,7 @@ export function DayDetailPanel({
                       }`}>
                         {item.type === 'income' ? '+' : item.type === 'transfer' ? '↔' : '-'}{formatCurrency(item.amount)}
                       </span>
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex gap-1">
                         <button
                           onClick={() => {
                             // Find the original scheduled item to edit
