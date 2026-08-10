@@ -2,7 +2,6 @@ import {
   addDays,
   startOfDay,
   isBefore,
-  isSameDay,
   addWeeks,
   addMonths,
 } from 'date-fns';
@@ -132,10 +131,12 @@ export function projectBalances(
     byDay.get(key)!.push(inst);
   }
 
-  // Walk day by day, computing running balance
-  // Past-dated items are shown on the calendar but do NOT affect the balance,
-  // because the current balance already reflects everything that happened before today.
-  const today = startOfDay(new Date());
+  // Walk day by day, computing running balance.
+  // currentBalance is treated as the balance at the BEGINNING of the projection
+  // start date. All transactions within the range are applied, including those
+  // on the start date itself. This ensures that if a user sets a starting balance
+  // on a day that also has expenses, the displayed balance for that day reflects
+  // the expenses being subtracted.
   const result: DayBalance[] = [];
   let runningBalance = account.currentBalance;
 
@@ -143,19 +144,16 @@ export function projectBalances(
     const date = addDays(start, i);
     const key = date.toDateString();
     const dayItems = byDay.get(key) ?? [];
-    const isPast = isBefore(date, today);
 
-    // Apply each item (skip balance changes for past dates)
-    if (!isPast) {
-      for (const item of dayItems) {
-        if (item.type === 'income') {
-          runningBalance += item.amount;
-        } else if (item.type === 'expense') {
-          runningBalance -= item.amount;
-        } else if (item.type === 'transfer') {
-          // Transfer out from this account
-          runningBalance -= item.amount;
-        }
+    // Apply each item to the running balance
+    for (const item of dayItems) {
+      if (item.type === 'income') {
+        runningBalance += item.amount;
+      } else if (item.type === 'expense') {
+        runningBalance -= item.amount;
+      } else if (item.type === 'transfer') {
+        // Transfer out from this account
+        runningBalance -= item.amount;
       }
     }
 

@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useMemo, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
 import {
   format,
   addMonths,
@@ -19,10 +18,9 @@ import { DayDetailPanel } from './DayDetailPanel';
 import { AddScheduledItemModal } from './AddScheduledItemModal';
 import { SettingsModal } from './SettingsModal';
 import { projectBalances, formatCurrency } from '@/lib/calculations';
-import type { DayBalance, ScheduledItem, ScheduledInstance } from '@/lib/types';
+import type { DayBalance, ScheduledItem } from '@/lib/types';
 
 function CalendarPageInner() {
-  const router = useRouter();
   const { accounts, selectedAccountId, selectedAccount, scheduledItems, loading, error, setSelectedAccountId } = useCashflow();
   const { categories } = useCategories();
 
@@ -32,14 +30,18 @@ function CalendarPageInner() {
   const [modalDate, setModalDate] = useState<Date | null>(null);
   const [editItem, setEditItem] = useState<ScheduledItem | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false);
-  const [chooserOpen, setChooserOpen] = useState(false);
+
 
   // Get the balance map for the full projection (for today's balance display)
+  // Project from 90 days ago so past transactions are reflected in today's balance.
+  // currentBalance is treated as the starting balance at the beginning of the projection.
   const todayBalance = useMemo(() => {
     if (!selectedAccount) return null;
-    const balances = projectBalances(selectedAccount, scheduledItems, new Date(), 1);
-    return balances[0] ?? null;
+    const lookback = new Date();
+    lookback.setDate(lookback.getDate() - 90);
+    const balances = projectBalances(selectedAccount, scheduledItems, lookback, 91);
+    const today = new Date();
+    return balances.find((b) => isSameDay(b.date, today)) ?? null;
   }, [selectedAccount, scheduledItems]);
 
   // Get the DayBalance for the selected date
@@ -127,20 +129,10 @@ function CalendarPageInner() {
   }, [scheduledItems]);
 
   const handleAddButton = useCallback(() => {
-    setChooserOpen(true);
-  }, []);
-
-  const handleChooseManual = useCallback(() => {
-    setChooserOpen(false);
     setEditItem(null);
     setModalDate(selectedDate ?? new Date());
     setModalOpen(true);
   }, [selectedDate]);
-
-  const handleChooseScan = useCallback(() => {
-    setChooserOpen(false);
-    router.push('/scan');
-  }, [router]);
 
   if (loading) {
     return (
@@ -338,50 +330,7 @@ function CalendarPageInner() {
         </svg>
       </button>
 
-      {/* Add item chooser (iOS action sheet style) */}
-      {chooserOpen && (
-        <>
-          {/* Backdrop */}
-          <div
-            className="fixed inset-0 z-40 bg-black/30"
-            onClick={() => setChooserOpen(false)}
-          />
-          {/* Action sheet */}
-          <div className="fixed bottom-0 left-0 right-0 z-50 px-4 pb-6 animate-[slideUp_0.2s_ease-out]">
-            <div className="max-w-2xl mx-auto bg-gray-100 rounded-2xl overflow-hidden shadow-xl">
-              <div className="bg-white px-4 py-3 text-center">
-                <p className="text-sm text-gray-500">Add Transaction</p>
-              </div>
-              <div className="mt-1 bg-white">
-                <button
-                  onClick={handleChooseManual}
-                  className="w-full px-4 py-3.5 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors border-b border-gray-100"
-                >
-                  <span className="text-xl">✏️</span>
-                  <span className="text-base font-medium text-gray-900">Enter Manually</span>
-                </button>
-                <button
-                  onClick={handleChooseScan}
-                  className="w-full px-4 py-3.5 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors"
-                >
-                  <span className="text-xl">📷</span>
-                  <span className="text-base font-medium text-gray-900">Scan Receipt</span>
-                </button>
-              </div>
-              <div className="mt-1 bg-white">
-                <button
-                  onClick={() => setChooserOpen(false)}
-                  className="w-full px-4 py-3.5 text-center font-semibold text-blue-600 hover:bg-gray-50 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* Day detail panel */}
+{/* Day detail panel */}
       {selectedDayBalance && (
         <DayDetailPanel
           dayBalance={selectedDayBalance}
