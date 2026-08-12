@@ -1,21 +1,32 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { AppProviders, useCards } from '@/lib/context';
 import { CardList } from './CardList';
 import { CardForm } from './CardForm';
 import { CSVImport } from './CSVImport';
 import { formatCurrency } from '@/lib/calculations';
+import { getLiveBalance } from '@/lib/cardOptimization';
 import type { CreditCard } from '@/lib/types';
 
 function CardsPageInner() {
-  const { cards, loading, error } = useCards();
+  const { cards, cardTransactions, loading, error } = useCards();
   const [formOpen, setFormOpen] = useState(false);
   const [editCard, setEditCard] = useState<CreditCard | null>(null);
   const [importOpen, setImportOpen] = useState(false);
 
+  // Calculate live balances from transactions
+  const liveBalances = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const card of cards) {
+      const txs = cardTransactions.filter((t) => t.cardId === card.id);
+      map.set(card.id, txs.length > 0 ? getLiveBalance(txs) : card.balance);
+    }
+    return map;
+  }, [cards, cardTransactions]);
+
   const activeCards = cards.filter((c) => c.isActive);
-  const totalBalance = activeCards.reduce((s, c) => s + c.balance, 0);
+  const totalBalance = activeCards.reduce((s, c) => s + (liveBalances.get(c.id) ?? c.balance), 0);
   const totalLimit = activeCards.reduce((s, c) => s + c.creditLimit, 0);
   const totalMinPayments = activeCards.reduce((s, c) => s + c.minimumPayment, 0);
   const avgAPR = activeCards.length > 0

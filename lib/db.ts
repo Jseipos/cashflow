@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie';
-import type { Account, ScheduledItem, CreditCard, WishlistItem, Category } from './types';
+import type { Account, ScheduledItem, CreditCard, WishlistItem, Category, CardTransaction } from './types';
 
 // Default categories with emoji icons and colors
 export const DEFAULT_CATEGORIES: Omit<Category, 'id' | 'createdAt'>[] = [
@@ -27,6 +27,7 @@ export class CashflowDB extends Dexie {
   creditCards!: Table<CreditCard, string>;
   wishlistItems!: Table<WishlistItem, string>;
   categories!: Table<Category, string>;
+  cardTransactions!: Table<CardTransaction, string>;
 
   constructor() {
     super('cashflow-calendar');
@@ -52,6 +53,38 @@ export class CashflowDB extends Dexie {
       creditCards: 'id, isActive',
       wishlistItems: 'id, isActive, priority',
       categories: 'id, isActive, isCustom',
+    });
+
+    // Phase 5 schema — adds cardTransactions table
+    this.version(4).stores({
+      accounts: 'id, type, isActive',
+      scheduledItems: 'id, accountId, startDate, recurrence, sourceId, sourceType, categoryId, toAccountId',
+      creditCards: 'id, isActive',
+      wishlistItems: 'id, isActive, priority',
+      categories: 'id, isActive, isCustom',
+      cardTransactions: 'id, cardId, type, date',
+    }).upgrade(async (tx) => {
+      // Migration: for existing cards with balance > 0, create an initial
+      // "balance carryover" transaction so the math works out
+      const cards = await tx.table('creditCards').toArray();
+      const now = new Date();
+      const carryovers: CardTransaction[] = [];
+      for (const card of cards) {
+        if (card.balance > 0) {
+          carryovers.push({
+            id: crypto.randomUUID(),
+            cardId: card.id,
+            type: 'expense',
+            amount: card.balance,
+            description: 'Balance carryover (pre-existing balance)',
+            date: card.createdAt ?? now,
+            createdAt: now,
+          });
+        }
+      }
+      if (carryovers.length > 0) {
+        await tx.table('cardTransactions').bulkAdd(carryovers);
+      }
     });
   }
 }
@@ -267,4 +300,121 @@ export async function updateWishlistItem(item: WishlistItem): Promise<void> {
 export async function deleteWishlistItem(id: string): Promise<void> {
   const db = getDB();
   await db.wishlistItems.delete(id);
+}
+
+// ---- Card Transactions ----
+
+export async function getCardTransactions(cardId?: string): Promise<CardTransaction[]> {
+  const db = getDB();
+  if (cardId) {
+    return db.cardTransactions.where('cardId').equals(cardId).toArray();
+  }
+  return db.cardTransactions.toArray();
+}
+
+export async function getRecentCardTransactions(cardId: string, limit: number = 10): Promise<CardTransaction[]> {
+  const db = getDB();
+  const all = await db.cardTransactions.where('cardId').equals(cardId).toArray();
+  return all.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, limit);
+}
+
+export async function addCardTransaction(tx: CardTransaction): Promise<void> {
+  const db = getDB();
+  await db.cardTransactions.add(tx);
+}
+
+export async function deleteCardTransaction(id: string): Promise<void> {
+  const db = getDB();
+  await db.cardTransactions.delete(id);
+}
+
+export async function deleteCardTransactionsByCard(cardId: string): Promise<void> {
+  const db = getDB();
+  const items = await db.cardTransactions.where('cardId').equals(cardId).toArray();
+  await db.cardTransactions.bulkDelete(items.map((t) => t.id));
+}
+
+/**
+ * Calculate the live balance for a card from its transactions.
+ * Expenses increase balance, payments decrease it.
+ */
+export async function calculateCardBalance(cardId: string): Promise<number> {
+  const db = getDB();
+  const transactions = await db.cardTransactions.where('cardId').equals(cardId).toArray();
+  return transactions.reduce((balance, tx) => {
+    if (tx.type === 'expense') return balance + tx.amount;
+    if (tx.type === 'payment') return balance - tx.amount;
+    return balance;
+  }, 0);
+}
+
+/**
+ * Record an expense on a card: create a CardTransaction and update the card's balance.
+ */
+export async function recordCardExpense(
+  cardId: string,
+  amount: number,
+  description: string,
+  date: Date,
+  scheduledItemId?: string,
+): Promise<void> {
+  const db = getDB();
+  const now = new Date();
+  const tx: CardTransaction = {
+    id: crypto.randomUUID(),
+    cardId,
+    type: 'expense',
+    amount,
+    description,
+    date,
+    scheduledItemId,
+    createdAt: now,
+  };
+  await db.cardTransactions.add(tx);
+
+  // Update card balance
+  const card = await db.creditCards.get(cardId);
+  if (card) {
+    await db.creditCards.put({ ...card, balance: card.balance + amount, updatedAt: now });
+  }
+}
+
+/**
+ * Record a payment toward a card: create a CardTransaction and update the card's balance.
+ * Also updates the source account's balance if specified.
+ */
+export async function recordCardPayment(
+  cardId: string,
+  amount: number,
+  date: Date,
+  accountId?: string,
+  description?: string,
+): Promise<void> {
+  const db = getDB();
+  const now = new Date();
+  const tx: CardTransaction = {
+    id: crypto.randomUUID(),
+    cardId,
+    type: 'payment',
+    amount,
+    description: description ?? 'Card payment',
+    date,
+    accountId,
+    createdAt: now,
+  };
+  await db.cardTransactions.add(tx);
+
+  // Update card balance
+  const card = await db.creditCards.get(cardId);
+  if (card) {
+    await db.creditCards.put({ ...card, balance: Math.max(0, card.balance - amount), updatedAt: now });
+  }
+
+  // Update account balance if specified
+  if (accountId) {
+    const account = await db.accounts.get(accountId);
+    if (account) {
+      await db.accounts.put({ ...account, currentBalance: account.currentBalance - amount, updatedAt: now });
+    }
+  }
 }

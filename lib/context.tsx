@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import type { Account, ScheduledItem, CreditCard, WishlistItem, Category } from './types';
+import type { Account, ScheduledItem, CreditCard, WishlistItem, Category, CardTransaction } from './types';
 import {
   getDB,
   ensureDefaultAccount,
@@ -31,6 +31,11 @@ import {
   addCategory as dbAddCategory,
   updateCategory as dbUpdateCategory,
   deleteCategory as dbDeleteCategory,
+  getCardTransactions as dbGetCardTransactions,
+  addCardTransaction as dbAddCardTransaction,
+  recordCardExpense as dbRecordCardExpense,
+  recordCardPayment as dbRecordCardPayment,
+  deleteCardTransactionsByCard as dbDeleteCardTransactionsByCard,
 } from './db';
 
 // ---- Cashflow Context (Phase 1, extended Phase 4) ----
@@ -223,6 +228,7 @@ export function useCategories() {
 
 interface CardContextValue {
   cards: CreditCard[];
+  cardTransactions: CardTransaction[];
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -230,12 +236,15 @@ interface CardContextValue {
   updateCard: (card: CreditCard) => Promise<void>;
   deleteCard: (id: string) => Promise<void>;
   bulkAddCards: (cards: CreditCard[]) => Promise<void>;
+  recordCardExpense: (cardId: string, amount: number, description: string, date: Date, scheduledItemId?: string) => Promise<void>;
+  recordCardPayment: (cardId: string, amount: number, date: Date, accountId?: string, description?: string) => Promise<void>;
 }
 
 const CardContext = createContext<CardContextValue | null>(null);
 
 export function CardProvider({ children }: { children: React.ReactNode }) {
   const [cards, setCards] = useState<CreditCard[]>([]);
+  const [cardTransactions, setCardTransactions] = useState<CardTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -244,6 +253,8 @@ export function CardProvider({ children }: { children: React.ReactNode }) {
       setLoading(true);
       const all = await getAllCreditCards();
       setCards(all.sort((a, b) => a.name.localeCompare(b.name)));
+      const txs = await dbGetCardTransactions();
+      setCardTransactions(txs);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load cards');
@@ -267,8 +278,9 @@ export function CardProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const deleteCard = useCallback(async (id: string) => {
-    // Also delete associated scheduled items
+    // Also delete associated scheduled items and card transactions
     await deleteScheduledItemsBySource(id);
+    await dbDeleteCardTransactionsByCard(id);
     await deleteCreditCard(id);
     await refresh();
   }, [refresh]);
@@ -278,9 +290,31 @@ export function CardProvider({ children }: { children: React.ReactNode }) {
     await refresh();
   }, [refresh]);
 
+  const recordCardExpense = useCallback(async (
+    cardId: string,
+    amount: number,
+    description: string,
+    date: Date,
+    scheduledItemId?: string,
+  ) => {
+    await dbRecordCardExpense(cardId, amount, description, date, scheduledItemId);
+    await refresh();
+  }, [refresh]);
+
+  const recordCardPayment = useCallback(async (
+    cardId: string,
+    amount: number,
+    date: Date,
+    accountId?: string,
+    description?: string,
+  ) => {
+    await dbRecordCardPayment(cardId, amount, date, accountId, description);
+    await refresh();
+  }, [refresh]);
+
   return (
     <CardContext.Provider
-      value={{ cards, loading, error, refresh, addCard, updateCard, deleteCard, bulkAddCards }}
+      value={{ cards, cardTransactions, loading, error, refresh, addCard, updateCard, deleteCard, bulkAddCards, recordCardExpense, recordCardPayment }}
     >
       {children}
     </CardContext.Provider>

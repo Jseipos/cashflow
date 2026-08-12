@@ -99,6 +99,19 @@ export interface WishlistItem {
   updatedAt: Date;
 }
 
+// Phase 2: Credit Card Transaction (expense or payment on a card)
+export interface CardTransaction {
+  id: string;
+  cardId: string;
+  type: 'expense' | 'payment';
+  amount: number; // cents, positive
+  description: string;
+  date: Date;
+  scheduledItemId?: string; // link back to the ScheduledItem if applicable
+  accountId?: string; // for payments, which account the money came from
+  createdAt: Date;
+}
+
 // Phase 2: Payoff calculation result types
 export interface PayoffResultCard {
   cardId: string;
