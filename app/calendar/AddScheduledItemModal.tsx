@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { format, parse } from 'date-fns';
 import type { ScheduledItem, ItemType, RecurrenceType } from '@/lib/types';
-import { useCashflow, useCategories } from '@/lib/context';
+import { useCashflow, useCategories, useCards } from '@/lib/context';
 import { CategoryPicker } from '@/app/components/CategoryPicker';
 import { formatCurrency } from '@/lib/calculations';
 
@@ -22,6 +22,7 @@ export function AddScheduledItemModal({
 }: AddScheduledItemModalProps) {
   const { accounts, selectedAccountId, addScheduledItem, updateScheduledItem } = useCashflow();
   const { categories } = useCategories();
+  const { cards, recordCardExpense } = useCards();
 
   const [type, setType] = useState<ItemType>('expense');
   const [amount, setAmount] = useState<string>(''); // dollars input
@@ -30,6 +31,7 @@ export function AddScheduledItemModal({
   const [recurrence, setRecurrence] = useState<RecurrenceType>('once');
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [accountId, setAccountId] = useState<string>('');
+  const [cardId, setCardId] = useState<string>(''); // credit card as payment source
   const [toAccountId, setToAccountId] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -55,6 +57,7 @@ export function AddScheduledItemModal({
       setRecurrence('once');
       setCategoryId(null);
       setAccountId(selectedAccountId ?? accounts[0]?.id ?? '');
+      setCardId('');
       setToAccountId('');
     }
     setError(null);
@@ -66,8 +69,8 @@ export function AddScheduledItemModal({
     e.preventDefault();
     setError(null);
 
-    if (!accountId) {
-      setError('Select an account');
+    if (!accountId && !cardId) {
+      setError('Select an account or credit card');
       return;
     }
 
@@ -103,7 +106,7 @@ export function AddScheduledItemModal({
       const now = new Date();
       const item: ScheduledItem = {
         id: editItem?.id ?? crypto.randomUUID(),
-        accountId,
+        accountId: cardId ? (accounts[0]?.id ?? '') : accountId, // card expenses still need an account for the ledger
         type,
         amount: amountCents,
         description: description.trim(),
@@ -113,6 +116,8 @@ export function AddScheduledItemModal({
         endDate: null,
         isActive: true,
         lastProcessedDate: null,
+        sourceId: cardId || undefined,
+        sourceType: cardId ? 'card' : undefined,
         createdAt: editItem?.createdAt ?? now,
         updatedAt: now,
       };
@@ -126,6 +131,12 @@ export function AddScheduledItemModal({
       } else {
         await addScheduledItem(item);
       }
+
+      // If a credit card was selected as payment source, record the card transaction
+      if (cardId && type === 'expense') {
+        await recordCardExpense(cardId, amountCents, description.trim(), parsedDate, item.id);
+      }
+
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save');
@@ -135,6 +146,8 @@ export function AddScheduledItemModal({
   };
 
   const availableToAccounts = accounts.filter((a) => a.id !== accountId);
+  const activeCards = cards.filter((c) => c.isActive);
+  const showCardOption = type === 'expense' && activeCards.length > 0;
 
   return (
     <>
@@ -208,22 +221,59 @@ export function AddScheduledItemModal({
                 </div>
               </div>
 
-              {/* Account selector */}
+              {/* Account / Card selector */}
               <div>
                 <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">
-                  {type === 'transfer' ? 'From Account' : 'Account'}
+                  {type === 'transfer' ? 'From Account' : 'Paid With'}
                 </label>
-                <select
-                  value={accountId}
-                  onChange={(e) => setAccountId(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-gray-900 bg-white"
-                >
-                  {accounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} ({a.type})
-                    </option>
-                  ))}
-                </select>
+                {showCardOption && (
+                  <div className="flex gap-2 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => { setCardId(''); }}
+                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        !cardId ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      Account
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setAccountId(''); }}
+                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        cardId ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      Credit Card
+                    </button>
+                  </div>
+                )}
+                {!cardId ? (
+                  <select
+                    value={accountId}
+                    onChange={(e) => setAccountId(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-gray-900 bg-white"
+                  >
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} ({a.type})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value={cardId}
+                    onChange={(e) => setCardId(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none text-gray-900 bg-white"
+                  >
+                    <option value="">Select a card...</option>
+                    {activeCards.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} (bal: {formatCurrency(c.balance)})
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               {/* Transfer destination */}

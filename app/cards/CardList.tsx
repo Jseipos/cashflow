@@ -2,8 +2,8 @@
 
 import { useState, useMemo } from 'react';
 import { formatCurrency } from '@/lib/calculations';
-import { useCards } from '@/lib/context';
-import { calculateOptimalPayment, getLiveBalance, type PaymentRecommendation } from '@/lib/cardOptimization';
+import { useCards, useCashflow } from '@/lib/context';
+import { calculateOptimalPayment, getLiveBalance, getProjectedBalance, type PaymentRecommendation } from '@/lib/cardOptimization';
 import { LogPaymentModal } from './LogPaymentModal';
 import type { CreditCard, CardTransaction } from '@/lib/types';
 
@@ -14,6 +14,7 @@ interface CardListProps {
 
 export function CardList({ cards, onEdit }: CardListProps) {
   const { deleteCard, cardTransactions } = useCards();
+  const { scheduledItems } = useCashflow();
   const [paymentModalCardId, setPaymentModalCardId] = useState<string | null>(null);
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
 
@@ -34,7 +35,7 @@ export function CardList({ cards, onEdit }: CardListProps) {
     return map;
   }, [cardTransactions]);
 
-  // Calculate recommendations for each card
+  // Calculate recommendations and projections for each card
   const recommendations = useMemo(() => {
     const now = new Date();
     const recs = new Map<string, PaymentRecommendation | null>();
@@ -46,12 +47,23 @@ export function CardList({ cards, onEdit }: CardListProps) {
     return recs;
   }, [cards, transactionsByCard]);
 
+  const projections = useMemo(() => {
+    const now = new Date();
+    const projs = new Map<string, ReturnType<typeof getProjectedBalance>>();
+    for (const card of cards) {
+      const cardTxs = transactionsByCard.get(card.id) ?? [];
+      const proj = getProjectedBalance(card, cardTxs, scheduledItems, now);
+      projs.set(card.id, proj);
+    }
+    return projs;
+  }, [cards, transactionsByCard, scheduledItems]);
+
   const sorted = [...cards].sort((a, b) => {
-    // Active first, then by live balance descending
+    // Active first, then by projected balance descending
     if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
-    const aBal = getLiveBalance(transactionsByCard.get(a.id) ?? []) || a.balance;
-    const bBal = getLiveBalance(transactionsByCard.get(b.id) ?? []) || b.balance;
-    return bBal - aBal;
+    const aProj = projections.get(a.id);
+    const bProj = projections.get(b.id);
+    return (bProj?.projectedBalance ?? 0) - (aProj?.projectedBalance ?? 0);
   });
 
   return (
@@ -59,15 +71,18 @@ export function CardList({ cards, onEdit }: CardListProps) {
       {sorted.map((card) => {
         const cardTxs = transactionsByCard.get(card.id) ?? [];
         const liveBalance = cardTxs.length > 0 ? getLiveBalance(cardTxs) : card.balance;
+        const proj = projections.get(card.id);
+        const projectedBalance = proj?.projectedBalance ?? liveBalance;
         const utilization = card.creditLimit > 0
-          ? (liveBalance / card.creditLimit) * 100
+          ? (projectedBalance / card.creditLimit) * 100
           : 0;
-        const availableCredit = card.creditLimit - liveBalance;
+        const availableCredit = card.creditLimit - projectedBalance;
         const rec = recommendations.get(card.id);
         const recentTxs = [...cardTxs]
           .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
           .slice(0, 5);
         const isExpanded = expandedCardId === card.id;
+        const hasProjection = proj && (proj.accruedInterest > 0 || proj.pendingExpenses > 0 || proj.scheduledPayments > 0);
 
         return (
           <div
@@ -114,8 +129,13 @@ export function CardList({ cards, onEdit }: CardListProps) {
 
             <div className="grid grid-cols-3 gap-3 mb-2">
               <div>
-                <div className="text-xs text-gray-400">Balance</div>
-                <div className="text-sm font-bold text-gray-900">{formatCurrency(liveBalance)}</div>
+                <div className="text-xs text-gray-400">Projected Balance</div>
+                <div className="text-sm font-bold text-gray-900">{formatCurrency(projectedBalance)}</div>
+                {hasProjection && liveBalance !== projectedBalance && (
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    actual: {formatCurrency(liveBalance)}
+                  </div>
+                )}
               </div>
               <div>
                 <div className="text-xs text-gray-400">Available</div>
@@ -126,6 +146,30 @@ export function CardList({ cards, onEdit }: CardListProps) {
                 <div className="text-sm font-bold text-gray-900">{card.apr.toFixed(2)}%</div>
               </div>
             </div>
+
+            {/* Projection breakdown */}
+            {hasProjection && (
+              <div className="mb-2 px-2 py-1.5 rounded bg-gray-50 text-xs text-gray-600 space-y-0.5">
+                {proj.accruedInterest > 0 && (
+                  <div className="flex justify-between">
+                    <span>Interest accrued ({proj.daysAccrued}d)</span>
+                    <span className="text-amber-600">+{formatCurrency(proj.accruedInterest)}</span>
+                  </div>
+                )}
+                {proj.pendingExpenses > 0 && (
+                  <div className="flex justify-between">
+                    <span>Pending expenses</span>
+                    <span className="text-red-600">+{formatCurrency(proj.pendingExpenses)}</span>
+                  </div>
+                )}
+                {proj.scheduledPayments > 0 && (
+                  <div className="flex justify-between">
+                    <span>Scheduled payments</span>
+                    <span className="text-green-600">-{formatCurrency(proj.scheduledPayments)}</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Utilization bar */}
             <div className="flex items-center gap-2">

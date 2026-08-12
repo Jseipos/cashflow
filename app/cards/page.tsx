@@ -1,21 +1,22 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { AppProviders, useCards } from '@/lib/context';
+import { AppProviders, useCards, useCashflow } from '@/lib/context';
 import { CardList } from './CardList';
 import { CardForm } from './CardForm';
 import { CSVImport } from './CSVImport';
 import { formatCurrency } from '@/lib/calculations';
-import { getLiveBalance } from '@/lib/cardOptimization';
+import { getLiveBalance, getProjectedBalance } from '@/lib/cardOptimization';
 import type { CreditCard } from '@/lib/types';
 
 function CardsPageInner() {
   const { cards, cardTransactions, loading, error } = useCards();
+  const { scheduledItems } = useCashflow();
   const [formOpen, setFormOpen] = useState(false);
   const [editCard, setEditCard] = useState<CreditCard | null>(null);
   const [importOpen, setImportOpen] = useState(false);
 
-  // Calculate live balances from transactions
+  // Calculate live and projected balances from transactions
   const liveBalances = useMemo(() => {
     const map = new Map<string, number>();
     for (const card of cards) {
@@ -25,14 +26,27 @@ function CardsPageInner() {
     return map;
   }, [cards, cardTransactions]);
 
+  const projectedBalances = useMemo(() => {
+    const map = new Map<string, number>();
+    const now = new Date();
+    for (const card of cards) {
+      const txs = cardTransactions.filter((t) => t.cardId === card.id);
+      const proj = getProjectedBalance(card, txs, scheduledItems, now);
+      map.set(card.id, proj.projectedBalance);
+    }
+    return map;
+  }, [cards, cardTransactions, scheduledItems]);
+
   const activeCards = cards.filter((c) => c.isActive);
-  const totalBalance = activeCards.reduce((s, c) => s + (liveBalances.get(c.id) ?? c.balance), 0);
+  const totalBalance = activeCards.reduce((s, c) => s + (projectedBalances.get(c.id) ?? c.balance), 0);
+  const totalLiveBalance = activeCards.reduce((s, c) => s + (liveBalances.get(c.id) ?? c.balance), 0);
   const totalLimit = activeCards.reduce((s, c) => s + c.creditLimit, 0);
   const totalMinPayments = activeCards.reduce((s, c) => s + c.minimumPayment, 0);
   const avgAPR = activeCards.length > 0
     ? activeCards.reduce((s, c) => s + c.apr, 0) / activeCards.length
     : 0;
   const overallUtilization = totalLimit > 0 ? (totalBalance / totalLimit) * 100 : 0;
+  const totalInterestAccrued = totalBalance - totalLiveBalance;
 
   const handleEdit = (card: CreditCard) => {
     setEditCard(card);
@@ -89,8 +103,13 @@ function CardsPageInner() {
           <div className="bg-white rounded-xl border border-gray-200 p-4">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <div>
-                <div className="text-xs text-gray-400 uppercase tracking-wide">Total Balance</div>
+                <div className="text-xs text-gray-400 uppercase tracking-wide">Projected Balance</div>
                 <div className="text-lg font-bold text-gray-900">{formatCurrency(totalBalance)}</div>
+                {totalInterestAccrued > 0 && (
+                  <div className="text-xs text-amber-600 mt-0.5">
+                    +{formatCurrency(totalInterestAccrued)} interest
+                  </div>
+                )}
               </div>
               <div>
                 <div className="text-xs text-gray-400 uppercase tracking-wide">Min Payments</div>

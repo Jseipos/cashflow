@@ -160,6 +160,155 @@ export function getLiveBalance(transactions: CardTransaction[]): number {
   }, 0);
 }
 
+/**
+ * Calculate projected balance for a card, factoring in:
+ * 1. Current live balance (from transactions)
+ * 2. Accrued interest since the last transaction (daily compounding)
+ * 3. Pending expenses from ScheduledItems linked to this card
+ * 4. Scheduled payments that will reduce the balance
+ *
+ * This gives a realistic "what you actually owe" number without bank sync.
+ */
+export function getProjectedBalance(
+  card: CreditCard,
+  transactions: CardTransaction[],
+  scheduledItems: import('./types').ScheduledItem[],
+  asOfDate: Date = new Date(),
+): {
+  projectedBalance: number; // cents
+  liveBalance: number; // cents
+  accruedInterest: number; // cents
+  pendingExpenses: number; // cents
+  scheduledPayments: number; // cents
+  daysAccrued: number;
+} {
+  const liveBalance = transactions.length > 0 ? getLiveBalance(transactions) : card.balance;
+
+  // Find the most recent transaction date to calculate interest accrual
+  const lastTxDate = transactions.length > 0
+    ? new Date(Math.max(...transactions.map((tx) => new Date(tx.date).getTime())))
+    : new Date(card.updatedAt);
+
+  // Calculate days of interest accrual
+  const daysAccrued = Math.max(
+    0,
+    Math.floor((asOfDate.getTime() - lastTxDate.getTime()) / (1000 * 60 * 60 * 24)),
+  );
+
+  // Accrued interest: daily compounding on the live balance
+  // dailyRate = APR / 365 / 100
+  // accrued = balance × ((1 + dailyRate)^days - 1)
+  const dailyRate = card.apr / 100 / 365;
+  const accruedInterest = liveBalance > 0 && card.apr > 0
+    ? Math.round(liveBalance * (Math.pow(1 + dailyRate, daysAccrued) - 1))
+    : 0;
+
+  // Find pending expenses from ScheduledItems linked to this card
+  // These are expenses that are scheduled but haven't been recorded as CardTransactions yet
+  const cardScheduledItems = scheduledItems.filter(
+    (item) => item.sourceId === card.id && item.sourceType === 'card' && item.isActive,
+  );
+
+  let pendingExpenses = 0;
+  let scheduledPayments = 0;
+
+  for (const item of cardScheduledItems) {
+    const isPayment = item.description.toLowerCase().includes('payment');
+    
+    if (item.type === 'expense' && !isPayment) {
+      // Regular expense: adds to the card balance
+      if (item.recurrence === 'once') {
+        if (new Date(item.startDate) > asOfDate) {
+          pendingExpenses += item.amount;
+        }
+      } else {
+        const nextStatement = nextDayOfMonth(card.statementDate, asOfDate);
+        const occurrences = countOccurrences(item, asOfDate, nextStatement);
+        pendingExpenses += item.amount * occurrences;
+      }
+    } else if (item.type === 'expense' && isPayment) {
+      // Scheduled payment: reduces the card balance
+      if (item.recurrence === 'once') {
+        if (new Date(item.startDate) > asOfDate) {
+          scheduledPayments += item.amount;
+        }
+      } else {
+        const nextDue = nextDayOfMonth(card.dueDate, asOfDate);
+        const occurrences = countOccurrences(item, asOfDate, nextDue);
+        scheduledPayments += item.amount * occurrences;
+      }
+    }
+  }
+
+  const projectedBalance = Math.max(0, liveBalance + accruedInterest + pendingExpenses - scheduledPayments);
+
+  return {
+    projectedBalance,
+    liveBalance,
+    accruedInterest,
+    pendingExpenses,
+    scheduledPayments,
+    daysAccrued,
+  };
+}
+
+/**
+ * Count how many times a recurring scheduled item occurs between two dates.
+ */
+function countOccurrences(
+  item: import('./types').ScheduledItem,
+  from: Date,
+  to: Date,
+): number {
+  if (item.recurrence === 'once') {
+    const itemDate = new Date(item.startDate);
+    return itemDate >= from && itemDate <= to ? 1 : 0;
+  }
+
+  let count = 0;
+  let current = new Date(item.startDate);
+  const end = item.endDate ? new Date(item.endDate) : null;
+
+  // Fast-forward to first occurrence >= from
+  while (current < from) {
+    switch (item.recurrence) {
+      case 'weekly':
+        current = new Date(current.getTime() + 7 * 24 * 60 * 60 * 1000);
+        break;
+      case 'biweekly':
+        current = new Date(current.getTime() + 14 * 24 * 60 * 60 * 1000);
+        break;
+      case 'monthly':
+        current = new Date(current.getFullYear(), current.getMonth() + 1, current.getDate());
+        break;
+      default:
+        return 0;
+    }
+    if (end && current > end) return 0;
+  }
+
+  // Count occurrences between from and to
+  while (current <= to) {
+    if (end && current > end) break;
+    count++;
+    switch (item.recurrence) {
+      case 'weekly':
+        current = new Date(current.getTime() + 7 * 24 * 60 * 60 * 1000);
+        break;
+      case 'biweekly':
+        current = new Date(current.getTime() + 14 * 24 * 60 * 60 * 1000);
+        break;
+      case 'monthly':
+        current = new Date(current.getFullYear(), current.getMonth() + 1, current.getDate());
+        break;
+      default:
+        return count;
+    }
+  }
+
+  return count;
+}
+
 function ordinal(n: number): string {
   const s = ['th', 'st', 'nd', 'rd'];
   const v = n % 100;
