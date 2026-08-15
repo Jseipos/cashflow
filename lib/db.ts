@@ -64,26 +64,31 @@ export class CashflowDB extends Dexie {
       categories: 'id, isActive, isCustom',
       cardTransactions: 'id, cardId, type, date',
     }).upgrade(async (tx) => {
-      // Migration: for existing cards with balance > 0, create an initial
-      // "balance carryover" transaction so the math works out
-      const cards = await tx.table('creditCards').toArray();
-      const now = new Date();
-      const carryovers: CardTransaction[] = [];
-      for (const card of cards) {
-        if (card.balance > 0) {
-          carryovers.push({
-            id: crypto.randomUUID(),
-            cardId: card.id,
-            type: 'expense',
-            amount: card.balance,
-            description: 'Balance carryover (pre-existing balance)',
-            date: card.createdAt ?? now,
-            createdAt: now,
-          });
+      try {
+        // Migration: for existing cards with balance > 0, create an initial
+        // "balance carryover" transaction so the math works out
+        const cards = await tx.table('creditCards').toArray();
+        const now = new Date();
+        const carryovers: CardTransaction[] = [];
+        for (const card of cards) {
+          if (card.balance > 0) {
+            carryovers.push({
+              id: crypto.randomUUID(),
+              cardId: card.id,
+              type: 'expense',
+              amount: card.balance,
+              description: 'Balance carryover (pre-existing balance)',
+              date: card.createdAt ?? now,
+              createdAt: now,
+            });
+          }
         }
-      }
-      if (carryovers.length > 0) {
-        await tx.table('cardTransactions').bulkAdd(carryovers);
+        if (carryovers.length > 0) {
+          await tx.table('cardTransactions').bulkAdd(carryovers);
+        }
+      } catch (e) {
+        // If migration fails, log but don't block the upgrade
+        console.warn('Card transactions migration failed:', e);
       }
     });
   }

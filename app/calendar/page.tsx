@@ -12,7 +12,7 @@ import {
   endOfMonth,
   isWithinInterval,
 } from 'date-fns';
-import { CashflowProvider, CategoryProvider, useCashflow, useCategories } from '@/lib/context';
+import { CashflowProvider, CategoryProvider, CardProvider, useCashflow, useCategories } from '@/lib/context';
 import { CalendarGrid } from './CalendarGrid';
 import { DayDetailPanel } from './DayDetailPanel';
 import { AddScheduledItemModal } from './AddScheduledItemModal';
@@ -44,18 +44,20 @@ function CalendarPageInner() {
     return balances.find((b) => isSameDay(b.date, today)) ?? null;
   }, [selectedAccount, scheduledItems]);
 
-  // Get the DayBalance for the selected date
+  // Get the DayBalance for the selected date — use the same projection window as the grid
   const selectedDayBalance = useMemo(() => {
     if (!selectedDate || !selectedAccount) return null;
+    const monthStart = startOfMonth(viewMonth);
+    const monthEnd = endOfMonth(viewMonth);
     const today = new Date();
-    const start = startOfDay(today);
-
-    const projStart = isBeforeDay(selectedDate, start) ? selectedDate : start;
-    const days = Math.max(90, differenceInDaysSafe(selectedDate, projStart) + 5);
-
-    const balances = projectBalances(selectedAccount, scheduledItems, projStart, days);
+    const projStart = isBeforeDay(monthStart, startOfDay(today)) ? monthStart : startOfDay(today);
+    const projDays = Math.max(
+      90,
+      differenceInDaysSafe(monthEnd, projStart) + 1,
+    );
+    const balances = projectBalances(selectedAccount, scheduledItems, projStart, projDays);
     return balances.find((b) => isSameDay(b.date, selectedDate)) ?? null;
-  }, [selectedDate, selectedAccount, scheduledItems]);
+  }, [selectedDate, selectedAccount, scheduledItems, viewMonth]);
 
   // Spending by category for current month
   const monthCategorySummary = useMemo(() => {
@@ -377,7 +379,9 @@ export default function CalendarPage() {
   return (
     <CashflowProvider>
       <CategoryProvider>
-        <CalendarPageInner />
+        <CardProvider>
+          <CalendarPageInner />
+        </CardProvider>
       </CategoryProvider>
     </CashflowProvider>
   );

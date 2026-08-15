@@ -253,8 +253,13 @@ export function CardProvider({ children }: { children: React.ReactNode }) {
       setLoading(true);
       const all = await getAllCreditCards();
       setCards(all.sort((a, b) => a.name.localeCompare(b.name)));
-      const txs = await dbGetCardTransactions();
-      setCardTransactions(txs);
+      try {
+        const txs = await dbGetCardTransactions();
+        setCardTransactions(txs);
+      } catch {
+        // cardTransactions table may not exist yet (pre-v4 schema)
+        setCardTransactions([]);
+      }
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load cards');

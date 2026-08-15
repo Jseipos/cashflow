@@ -206,22 +206,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     setBackingUp(true);
     try {
       const db = getDB();
-      const [accounts, scheduledItems, creditCards, wishlistItems, categories] = await Promise.all([
+      const [accounts, scheduledItems, creditCards, wishlistItems, categories, cardTransactions] = await Promise.all([
         db.accounts.toArray(),
         db.scheduledItems.toArray(),
         db.creditCards.toArray(),
         db.wishlistItems.toArray(),
         db.categories.toArray(),
+        db.cardTransactions.toArray(),
       ]);
 
       const backup = {
-        version: 3,
+        version: 4,
         exportedAt: new Date().toISOString(),
         accounts,
         scheduledItems,
         creditCards,
         wishlistItems,
         categories,
+        cardTransactions,
       };
 
       const json = JSON.stringify(backup, null, 2);
@@ -245,7 +247,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const handleDownloadTemplate = useCallback(() => {
     const now = new Date().toISOString();
     const template = {
-      version: 3,
+      version: 4,
       exportedAt: now,
       _instructions: 'Fill in your data below. Amounts are in cents (multiply dollars by 100). Dates in ISO format. Leave arrays empty [] if not needed. Import this file via the Restore button.',
       accounts: [
@@ -314,6 +316,19 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         },
       ],
       categories: [],
+      cardTransactions: [
+        {
+          id: 'tx-example-1',
+          cardId: 'card-example-1',
+          type: 'expense',
+          amount: 50000,
+          description: 'Example purchase',
+          date: now,
+          scheduledItemId: null,
+          accountId: null,
+          createdAt: now,
+        },
+      ],
     };
 
     const json = JSON.stringify(template, null, 2);
@@ -354,6 +369,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         db.creditCards.clear(),
         db.wishlistItems.clear(),
         db.categories.clear(),
+        db.cardTransactions.clear(),
       ]);
 
       // Restore dates from strings
@@ -366,7 +382,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         return obj;
       };
 
-      const dateFields = ['createdAt', 'updatedAt', 'startDate', 'endDate', 'lastProcessedDate', 'targetDate'];
+      const dateFields = ['createdAt', 'updatedAt', 'startDate', 'endDate', 'lastProcessedDate', 'targetDate', 'date'];
 
       if (data.accounts?.length) {
         await db.accounts.bulkAdd(data.accounts.map((a: Record<string, unknown>) => parseDates(a, dateFields)));
@@ -383,6 +399,9 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
       if (data.categories?.length) {
         await db.categories.bulkAdd(data.categories.map((c: Record<string, unknown>) => parseDates(c, dateFields)));
       }
+      if (data.cardTransactions?.length) {
+        await db.cardTransactions.bulkAdd(data.cardTransactions.map((t: Record<string, unknown>) => parseDates(t, dateFields)));
+      }
 
       const counts = [
         data.accounts?.length ? `${data.accounts.length} accounts` : null,
@@ -390,6 +409,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         data.creditCards?.length ? `${data.creditCards.length} cards` : null,
         data.wishlistItems?.length ? `${data.wishlistItems.length} wishlist` : null,
         data.categories?.length ? `${data.categories.length} categories` : null,
+        data.cardTransactions?.length ? `${data.cardTransactions.length} transactions` : null,
       ].filter(Boolean).join(', ');
 
       setRestoreMsg(`Restored: ${counts}`);
@@ -769,7 +789,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 {backingUp ? 'Creating Backup...' : '📦 Export All Data (JSON)'}
               </button>
               <p className="text-xs text-gray-400 text-center">
-                Everything: accounts, items, cards, wishlist, categories
+                Everything: accounts, items, cards, wishlist, categories, transactions
               </p>
 
               {/* Download template */}
