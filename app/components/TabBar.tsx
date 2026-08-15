@@ -9,6 +9,7 @@ const TABS = [
   { href: '/cards', label: 'Cards', icon: '💳' },
   { href: '/payoff', label: 'Payoff', icon: '🎯' },
   { href: '/wishlist', label: 'Wishlist', icon: '⭐' },
+  { href: '/about', label: 'About', icon: 'ℹ️' },
 ];
 
 export function TabBar() {
