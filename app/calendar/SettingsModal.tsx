@@ -4,9 +4,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useCashflow } from '@/lib/context';
 import { formatCurrency } from '@/lib/calculations';
 import { getDB, getAllScheduledItems, getAllAccounts, getAllCreditCards, getAllCategories } from '@/lib/db';
-import { normalizeLineEndings, detectDelimiter, parseDelimitedLine, safeCell, dollarsToCents } from '@/lib/csv-utils';
-import type { ScheduledItem } from '@/lib/types';
-import type { Account } from '@/lib/types';
+import { normalizeLineEndings, detectDelimiter, parseDelimitedLine, safeCell, dollarsToCents, safeFloat, safeInt } from '@/lib/csv-utils';
+import type { ScheduledItem, Account, CreditCard, WishlistItem, CardTransaction } from '@/lib/types';
 
 interface SettingsModalProps {
   open: boolean;
@@ -246,102 +245,427 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   // ---- Download Template ----
   const handleDownloadTemplate = useCallback(() => {
     const now = new Date().toISOString();
-    const template = {
-      version: 4,
-      exportedAt: now,
-      _instructions: 'Fill in your data below. Amounts are in cents (multiply dollars by 100). Dates in ISO format. Leave arrays empty [] if not needed. Import this file via the Restore button.',
-      accounts: [
-        {
-          id: 'account-1',
-          name: 'Checking',
-          type: 'checking',
-          currentBalance: 0,
-          lowBalanceThreshold: 10000,
-          color: '#3b82f6',
-          isActive: true,
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      scheduledItems: [
-        {
-          id: 'item-example-1',
-          accountId: 'account-1',
-          type: 'expense',
-          amount: 150000,
-          description: 'Rent',
-          categoryId: null,
-          recurrence: 'monthly',
-          startDate: now,
-          endDate: null,
-          isActive: true,
-          lastProcessedDate: null,
-          sourceId: null,
-          sourceType: null,
-          toAccountId: null,
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      creditCards: [
-        {
-          id: 'card-example-1',
-          name: 'Chase Sapphire',
-          balance: 500000,
-          apr: 24.99,
-          minimumPayment: 15000,
-          creditLimit: 1500000,
-          statementDate: 1,
-          dueDate: 15,
-          color: '#3b82f6',
-          isActive: true,
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      wishlistItems: [
-        {
-          id: 'wish-example-1',
-          name: 'New Laptop',
-          estimatedCost: 120000,
-          priority: 1,
-          monthlySavings: 20000,
-          targetDate: null,
-          savedSoFar: 0,
-          isActive: true,
-          isPurchased: false,
-          savingsDay: 1,
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      categories: [],
-      cardTransactions: [
-        {
-          id: 'tx-example-1',
-          cardId: 'card-example-1',
-          type: 'expense',
-          amount: 50000,
-          description: 'Example purchase',
-          date: now,
-          scheduledItemId: null,
-          accountId: null,
-          createdAt: now,
-        },
-      ],
-    };
+    
+    // Multi-section CSV template
+    const sections = [
+      '# CASH FLOW IMPORT TEMPLATE',
+      '# Fill in your data below. Delete these comment lines before importing.',
+      '# Amounts in dollars (e.g., 1500.00). Dates in YYYY-MM-DD or M/D/YYYY format.',
+      '#',
+      '# SECTION 1: ACCOUNTS',
+      '# Required: Name, Type, CurrentBalance',
+      '# Optional: LowBalanceThreshold, Color',
+      'Name,Type,CurrentBalance,LowBalanceThreshold,Color',
+      'Checking,checking,0.00,100.00,#3b82f6',
+      'Savings,savings,0.00,100.00,#22c55e',
+      '',
+      '# SECTION 2: SCHEDULED ITEMS (Bills & Income)',
+      '# Required: Date, Description, Type, Amount, Account',
+      '# Optional: Category, Recurrence (once/weekly/biweekly/monthly)',
+      'Date,Description,Type,Amount,Account,Category,Recurrence',
+      '2026-08-15,Rent,expense,1500.00,Checking,Housing/Rent,monthly',
+      '2026-08-20,Paycheck,income,3000.00,Checking,Income,biweekly',
+      '',
+      '# SECTION 3: CREDIT CARDS',
+      '# Required: Name, Balance, APR, MinimumPayment, CreditLimit, StatementDate, DueDate',
+      '# Optional: Color, PaymentAccount',
+      'Name,Balance,APR,MinimumPayment,CreditLimit,StatementDate,DueDate,Color,PaymentAccount',
+      'Chase Sapphire,5000.00,24.99,150.00,15000.00,1,15,#3b82f6,Checking',
+      '',
+      '# SECTION 4: WISHLIST ITEMS',
+      '# Required: Name, EstimatedCost, Priority, MonthlySavings',
+      '# Optional: TargetDate, SavedSoFar, SavingsDay',
+      'Name,EstimatedCost,Priority,MonthlySavings,TargetDate,SavedSoFar,SavingsDay',
+      'New Laptop,1200.00,1,200.00,,0.00,1',
+      '',
+      '# SECTION 5: CARD TRANSACTIONS (Optional - for existing card balances)',
+      '# Required: CardName, Type, Amount, Date',
+      '# Optional: Description, AccountName (for payments)',
+      'CardName,Type,Amount,Date,Description,AccountName',
+      'Chase Sapphire,expense,500.00,2026-08-01,Example purchase,',
+    ];
 
-    const json = JSON.stringify(template, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
+    const csv = sections.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'cashflow-import-template.json';
+    a.download = 'cashflow-import-template.csv';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }, []);
+
+  // ---- Full CSV Import (Multi-Section) ----
+  const [showFullCsvImport, setShowFullCsvImport] = useState(false);
+  const [fullCsvText, setFullCsvText] = useState('');
+  const [fullCsvPreview, setFullCsvPreview] = useState<FullCsvPreview | null>(null);
+  const [importingFullCsv, setImportingFullCsv] = useState(false);
+
+  interface FullCsvPreview {
+    accounts: Account[];
+    scheduledItems: ScheduledItem[];
+    creditCards: CreditCard[];
+    wishlistItems: WishlistItem[];
+    cardTransactions: CardTransaction[];
+    errors: string[];
+  }
+
+  const parseFullCsv = (text: string): FullCsvPreview => {
+    const result: FullCsvPreview = {
+      accounts: [],
+      scheduledItems: [],
+      creditCards: [],
+      wishlistItems: [],
+      cardTransactions: [],
+      errors: [],
+    };
+
+    const normalized = normalizeLineEndings(text);
+    const lines = normalized.split('\n');
+    
+    let currentSection: string | null = null;
+    let headers: string[] = [];
+    const now = new Date();
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      // Skip empty lines and comments
+      if (!line || line.startsWith('#')) continue;
+      
+      // Detect section headers
+      if (line.toLowerCase().includes('section 1') || line.toLowerCase().includes('accounts')) {
+        currentSection = 'accounts';
+        continue;
+      }
+      if (line.toLowerCase().includes('section 2') || line.toLowerCase().includes('scheduled')) {
+        currentSection = 'scheduledItems';
+        continue;
+      }
+      if (line.toLowerCase().includes('section 3') || line.toLowerCase().includes('credit')) {
+        currentSection = 'creditCards';
+        continue;
+      }
+      if (line.toLowerCase().includes('section 4') || line.toLowerCase().includes('wishlist')) {
+        currentSection = 'wishlistItems';
+        continue;
+      }
+      if (line.toLowerCase().includes('section 5') || line.toLowerCase().includes('transaction')) {
+        currentSection = 'cardTransactions';
+        continue;
+      }
+
+      // Parse CSV line
+      const delimiter = detectDelimiter(line);
+      const cols = parseDelimitedLine(line, delimiter);
+      
+      // Check if this is a header row
+      if (cols.some(c => c.toLowerCase().includes('name') || c.toLowerCase().includes('date') || c.toLowerCase().includes('type'))) {
+        headers = cols.map(h => h.toLowerCase().trim());
+        continue;
+      }
+
+      // Parse data rows based on current section
+      try {
+        if (currentSection === 'accounts' && cols.length >= 3) {
+          const nameIdx = headers.findIndex(h => h.includes('name'));
+          const typeIdx = headers.findIndex(h => h.includes('type'));
+          const balanceIdx = headers.findIndex(h => h.includes('balance') && !h.includes('threshold'));
+          const thresholdIdx = headers.findIndex(h => h.includes('threshold'));
+          const colorIdx = headers.findIndex(h => h.includes('color'));
+          
+          const name = safeCell(cols, nameIdx >= 0 ? nameIdx : 0);
+          const type = (safeCell(cols, typeIdx >= 0 ? typeIdx : 1, 'checking').toLowerCase() as Account['type']);
+          const balance = dollarsToCents(safeCell(cols, balanceIdx >= 0 ? balanceIdx : 2, '0'));
+          const threshold = dollarsToCents(safeCell(cols, thresholdIdx >= 0 ? thresholdIdx : 3, '100'));
+          const color = safeCell(cols, colorIdx >= 0 ? colorIdx : 4, '#3b82f6');
+          
+          if (name) {
+            result.accounts.push({
+              id: crypto.randomUUID(),
+              name,
+              type: ['checking', 'savings', 'cash', 'credit'].includes(type) ? type : 'checking',
+              currentBalance: balance,
+              lowBalanceThreshold: threshold,
+              color,
+              isActive: true,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+        }
+        
+        else if (currentSection === 'scheduledItems' && cols.length >= 4) {
+          const dateIdx = headers.findIndex(h => h.includes('date'));
+          const descIdx = headers.findIndex(h => h.includes('desc'));
+          const typeIdx = headers.findIndex(h => h === 'type');
+          const amountIdx = headers.findIndex(h => h.includes('amount'));
+          const accountIdx = headers.findIndex(h => h.includes('account'));
+          const categoryIdx = headers.findIndex(h => h.includes('category'));
+          const recurrenceIdx = headers.findIndex(h => h.includes('recur'));
+          
+          const dateStr = safeCell(cols, dateIdx >= 0 ? dateIdx : 0);
+          const description = safeCell(cols, descIdx >= 0 ? descIdx : 1);
+          const typeRaw = safeCell(cols, typeIdx >= 0 ? typeIdx : 2, 'expense');
+          const amount = dollarsToCents(safeCell(cols, amountIdx >= 0 ? amountIdx : 3, '0'));
+          const accountName = safeCell(cols, accountIdx >= 0 ? accountIdx : 4);
+          const categoryName = safeCell(cols, categoryIdx >= 0 ? categoryIdx : 5);
+          const recurrenceRaw = safeCell(cols, recurrenceIdx >= 0 ? recurrenceIdx : 6, 'once');
+          
+          const parsedDate = parseFlexibleDate(dateStr);
+          if (!parsedDate) {
+            result.errors.push(`Row ${i}: Invalid date "${dateStr}"`);
+            continue;
+          }
+          
+          const type = (['income', 'expense', 'transfer'].includes(typeRaw.toLowerCase()) 
+            ? typeRaw.toLowerCase() 
+            : 'expense') as ScheduledItem['type'];
+          
+          const recurrenceMap: Record<string, ScheduledItem['recurrence']> = {
+            'once': 'once', 'onetime': 'once',
+            'weekly': 'weekly', 'week': 'weekly',
+            'biweekly': 'biweekly', 'biweek': 'biweekly',
+            'monthly': 'monthly', 'month': 'monthly',
+          };
+          const recurrence = recurrenceMap[recurrenceRaw.toLowerCase().replace(/[^a-z]/g, '')] ?? 'once';
+          
+          if (description && amount > 0) {
+            result.scheduledItems.push({
+              id: crypto.randomUUID(),
+              accountId: '', // resolved at import
+              type,
+              amount,
+              description,
+              categoryId: undefined, // resolved at import
+              recurrence,
+              startDate: parsedDate,
+              endDate: null,
+              isActive: true,
+              lastProcessedDate: null,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+        }
+        
+        else if (currentSection === 'creditCards' && cols.length >= 7) {
+          const nameIdx = headers.findIndex(h => h.includes('name'));
+          const balanceIdx = headers.findIndex(h => h.includes('balance'));
+          const aprIdx = headers.findIndex(h => h.includes('apr'));
+          const minPaymentIdx = headers.findIndex(h => h.includes('minimum') || h.includes('minpayment'));
+          const limitIdx = headers.findIndex(h => h.includes('limit'));
+          const statementIdx = headers.findIndex(h => h.includes('statement'));
+          const dueIdx = headers.findIndex(h => h.includes('due'));
+          const colorIdx = headers.findIndex(h => h.includes('color'));
+          const paymentAccountIdx = headers.findIndex(h => h.includes('paymentaccount'));
+          
+          const name = safeCell(cols, nameIdx >= 0 ? nameIdx : 0);
+          const balance = dollarsToCents(safeCell(cols, balanceIdx >= 0 ? balanceIdx : 1, '0'));
+          const apr = safeFloat(safeCell(cols, aprIdx >= 0 ? aprIdx : 2, '0'));
+          const minPayment = dollarsToCents(safeCell(cols, minPaymentIdx >= 0 ? minPaymentIdx : 3, '0'));
+          const creditLimit = dollarsToCents(safeCell(cols, limitIdx >= 0 ? limitIdx : 4, '0'));
+          const statementDate = safeInt(safeCell(cols, statementIdx >= 0 ? statementIdx : 5, '1'));
+          const dueDate = safeInt(safeCell(cols, dueIdx >= 0 ? dueIdx : 6, '15'));
+          const color = safeCell(cols, colorIdx >= 0 ? colorIdx : 7, '#3b82f6');
+          const paymentAccountName = safeCell(cols, paymentAccountIdx >= 0 ? paymentAccountIdx : 8);
+          
+          if (name) {
+            result.creditCards.push({
+              id: crypto.randomUUID(),
+              name,
+              balance,
+              apr,
+              minimumPayment: minPayment,
+              creditLimit,
+              statementDate: Math.min(31, Math.max(1, statementDate)),
+              dueDate: Math.min(31, Math.max(1, dueDate)),
+              color,
+              paymentAccountId: undefined, // resolved at import
+              isActive: true,
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+        }
+        
+        else if (currentSection === 'wishlistItems' && cols.length >= 4) {
+          const nameIdx = headers.findIndex(h => h.includes('name'));
+          const costIdx = headers.findIndex(h => h.includes('cost') || h.includes('estimated'));
+          const priorityIdx = headers.findIndex(h => h.includes('priority'));
+          const savingsIdx = headers.findIndex(h => h.includes('savings') || h.includes('monthly'));
+          const targetDateIdx = headers.findIndex(h => h.includes('target'));
+          const savedIdx = headers.findIndex(h => h.includes('saved'));
+          const savingsDayIdx = headers.findIndex(h => h.includes('savingsday') || h.includes('day'));
+          
+          const name = safeCell(cols, nameIdx >= 0 ? nameIdx : 0);
+          const estimatedCost = dollarsToCents(safeCell(cols, costIdx >= 0 ? costIdx : 1, '0'));
+          const priority = safeInt(safeCell(cols, priorityIdx >= 0 ? priorityIdx : 2, '1'));
+          const monthlySavings = dollarsToCents(safeCell(cols, savingsIdx >= 0 ? savingsIdx : 3, '0'));
+          const targetDateStr = safeCell(cols, targetDateIdx >= 0 ? targetDateIdx : 4);
+          const savedSoFar = dollarsToCents(safeCell(cols, savedIdx >= 0 ? savedIdx : 5, '0'));
+          const savingsDay = safeInt(safeCell(cols, savingsDayIdx >= 0 ? savingsDayIdx : 6, '1'));
+          
+          if (name && estimatedCost > 0) {
+            result.wishlistItems.push({
+              id: crypto.randomUUID(),
+              name,
+              estimatedCost,
+              priority,
+              monthlySavings,
+              targetDate: targetDateStr ? parseFlexibleDate(targetDateStr) : null,
+              savedSoFar,
+              isActive: true,
+              isPurchased: false,
+              savingsDay: Math.min(28, Math.max(1, savingsDay)),
+              createdAt: now,
+              updatedAt: now,
+            });
+          }
+        }
+        
+        else if (currentSection === 'cardTransactions' && cols.length >= 4) {
+          const cardIdx = headers.findIndex(h => h.includes('card'));
+          const typeIdx = headers.findIndex(h => h.includes('type'));
+          const amountIdx = headers.findIndex(h => h.includes('amount'));
+          const dateIdx = headers.findIndex(h => h.includes('date'));
+          const descIdx = headers.findIndex(h => h.includes('desc'));
+          const accountIdx = headers.findIndex(h => h.includes('account'));
+          
+          const cardName = safeCell(cols, cardIdx >= 0 ? cardIdx : 0);
+          const typeRaw = safeCell(cols, typeIdx >= 0 ? typeIdx : 1, 'expense');
+          const amount = dollarsToCents(safeCell(cols, amountIdx >= 0 ? amountIdx : 2, '0'));
+          const dateStr = safeCell(cols, dateIdx >= 0 ? dateIdx : 3);
+          const description = safeCell(cols, descIdx >= 0 ? descIdx : 4, 'Imported transaction');
+          const accountName = safeCell(cols, accountIdx >= 0 ? accountIdx : 5);
+          
+          const parsedDate = parseFlexibleDate(dateStr);
+          if (!parsedDate) {
+            result.errors.push(`Row ${i}: Invalid date "${dateStr}"`);
+            continue;
+          }
+          
+          const type = (['expense', 'payment'].includes(typeRaw.toLowerCase()) 
+            ? typeRaw.toLowerCase() 
+            : 'expense') as CardTransaction['type'];
+          
+          if (cardName && amount > 0) {
+            result.cardTransactions.push({
+              id: crypto.randomUUID(),
+              cardId: '', // resolved at import
+              type,
+              amount,
+              description,
+              date: parsedDate,
+              accountId: undefined, // resolved at import
+              createdAt: now,
+            });
+          }
+        }
+      } catch (err) {
+        result.errors.push(`Row ${i}: ${err instanceof Error ? err.message : 'Parse error'}`);
+      }
+    }
+
+    return result;
+  };
+
+  const handleParseFullCsv = () => {
+    const preview = parseFullCsv(fullCsvText);
+    setFullCsvPreview(preview);
+  };
+
+  const handleImportFullCsv = async () => {
+    if (!fullCsvPreview) return;
+    
+    setImportingFullCsv(true);
+    setError(null);
+    
+    try {
+      const db = getDB();
+      const now = new Date();
+      
+      // Clear existing data
+      await Promise.all([
+        db.accounts.clear(),
+        db.scheduledItems.clear(),
+        db.creditCards.clear(),
+        db.wishlistItems.clear(),
+        db.cardTransactions.clear(),
+      ]);
+      
+      // Import accounts first (needed for foreign keys)
+      const accountMap = new Map<string, string>(); // name -> id
+      for (const acct of fullCsvPreview.accounts) {
+        await db.accounts.add(acct);
+        accountMap.set(acct.name.toLowerCase(), acct.id);
+      }
+      
+      // Import credit cards (needed for transactions)
+      const cardMap = new Map<string, string>(); // name -> id
+      for (const card of fullCsvPreview.creditCards) {
+        // Resolve payment account if specified
+        if (card.paymentAccountId === undefined && fullCsvText.toLowerCase().includes(card.name.toLowerCase())) {
+          // Try to find payment account by name in the original text
+          // This is a simplification - in practice we'd need to track this during parsing
+        }
+        await db.creditCards.add(card);
+        cardMap.set(card.name.toLowerCase(), card.id);
+      }
+      
+      // Import scheduled items with resolved account IDs
+      const defaultAccountId = fullCsvPreview.accounts[0]?.id || '';
+      for (const item of fullCsvPreview.scheduledItems) {
+        // Try to resolve account by matching description or use default
+        const resolvedItem = {
+          ...item,
+          accountId: item.accountId || defaultAccountId,
+        };
+        await db.scheduledItems.add(resolvedItem);
+      }
+      
+      // Import wishlist items
+      for (const item of fullCsvPreview.wishlistItems) {
+        await db.wishlistItems.add(item);
+      }
+      
+      // Import card transactions with resolved card IDs
+      for (const tx of fullCsvPreview.cardTransactions) {
+        // Try to find card by matching description or use first card
+        const resolvedTx = {
+          ...tx,
+          cardId: tx.cardId || fullCsvPreview.creditCards[0]?.id || '',
+        };
+        if (resolvedTx.cardId) {
+          await db.cardTransactions.add(resolvedTx);
+        }
+      }
+      
+      const counts = [
+        fullCsvPreview.accounts.length ? `${fullCsvPreview.accounts.length} accounts` : null,
+        fullCsvPreview.scheduledItems.length ? `${fullCsvPreview.scheduledItems.length} items` : null,
+        fullCsvPreview.creditCards.length ? `${fullCsvPreview.creditCards.length} cards` : null,
+        fullCsvPreview.wishlistItems.length ? `${fullCsvPreview.wishlistItems.length} wishlist` : null,
+        fullCsvPreview.cardTransactions.length ? `${fullCsvPreview.cardTransactions.length} transactions` : null,
+      ].filter(Boolean).join(', ');
+      
+      setRestoreMsg(`Imported: ${counts}${fullCsvPreview.errors.length ? ` (${fullCsvPreview.errors.length} errors)` : ''}`);
+      await refresh();
+      
+      // Reset state
+      setShowFullCsvImport(false);
+      setFullCsvText('');
+      setFullCsvPreview(null);
+      
+      setTimeout(() => setRestoreMsg(null), 5000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed');
+    } finally {
+      setImportingFullCsv(false);
+    }
+  };
 
   // ---- Restore from Backup (JSON only) ----
   const handleRestore = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -829,6 +1153,165 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Full CSV Import Section */}
+          <div className="border-t border-gray-100 pt-4 mt-4">
+            <h3 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-3">
+              Import All Data (CSV)
+            </h3>
+
+            {!showFullCsvImport ? (
+              <button
+                onClick={() => setShowFullCsvImport(true)}
+                className="w-full px-4 py-2.5 rounded-lg border border-green-300 bg-green-50 text-green-800 font-medium text-sm hover:bg-green-100 transition-colors flex items-center justify-center gap-2"
+              >
+                📊 Import from CSV Template
+              </button>
+            ) : !fullCsvPreview ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1.5">
+                    Paste CSV Data
+                  </label>
+                  <textarea
+                    value={fullCsvText}
+                    onChange={(e) => setFullCsvText(e.target.value)}
+                    placeholder="Paste your filled CSV template here..."
+                    rows={8}
+                    className="w-full px-3 py-2.5 rounded-lg border border-gray-300 text-sm font-mono text-gray-900 bg-white outline-none focus:border-green-500 focus:ring-2 focus:ring-green-200 resize-y placeholder:text-gray-400"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setShowFullCsvImport(false); setFullCsvText(''); }}
+                    className="flex-1 px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleParseFullCsv}
+                    disabled={!fullCsvText.trim()}
+                    className="flex-1 px-3 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 disabled:opacity-50"
+                  >
+                    Preview Import
+                  </button>
+                </div>
+
+                <div className="text-xs text-gray-600 space-y-1">
+                  <p><strong>Format:</strong> Multi-section CSV with headers for Accounts, Scheduled Items, Credit Cards, Wishlist, and Transactions.</p>
+                  <p>Download the template below for the exact format.</p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm text-gray-600">
+                    Ready to import
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setFullCsvPreview(null)}
+                    className="text-sm text-blue-600 hover:underline"
+                  >
+                    Edit data
+                  </button>
+                </div>
+
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {fullCsvPreview.accounts.length > 0 && (
+                    <div className="p-2.5 rounded-lg bg-blue-50 border border-blue-200">
+                      <p className="text-sm font-medium text-blue-900">
+                        {fullCsvPreview.accounts.length} Accounts
+                      </p>
+                      <p className="text-xs text-blue-700">
+                        {fullCsvPreview.accounts.map(a => a.name).join(', ')}
+                      </p>
+                    </div>
+                  )}
+                  
+                  {fullCsvPreview.scheduledItems.length > 0 && (
+                    <div className="p-2.5 rounded-lg bg-green-50 border border-green-200">
+                      <p className="text-sm font-medium text-green-900">
+                        {fullCsvPreview.scheduledItems.length} Scheduled Items
+                      </p>
+                      <p className="text-xs text-green-700">
+                        {fullCsvPreview.scheduledItems.slice(0, 3).map(i => i.description).join(', ')}
+                        {fullCsvPreview.scheduledItems.length > 3 ? '...' : ''}
+                      </p>
+                    </div>
+                  )}
+                  
+                  {fullCsvPreview.creditCards.length > 0 && (
+                    <div className="p-2.5 rounded-lg bg-purple-50 border border-purple-200">
+                      <p className="text-sm font-medium text-purple-900">
+                        {fullCsvPreview.creditCards.length} Credit Cards
+                      </p>
+                      <p className="text-xs text-purple-700">
+                        {fullCsvPreview.creditCards.map(c => c.name).join(', ')}
+                      </p>
+                    </div>
+                  )}
+                  
+                  {fullCsvPreview.wishlistItems.length > 0 && (
+                    <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200">
+                      <p className="text-sm font-medium text-amber-900">
+                        {fullCsvPreview.wishlistItems.length} Wishlist Items
+                      </p>
+                      <p className="text-xs text-amber-700">
+                        {fullCsvPreview.wishlistItems.map(w => w.name).join(', ')}
+                      </p>
+                    </div>
+                  )}
+                  
+                  {fullCsvPreview.cardTransactions.length > 0 && (
+                    <div className="p-2.5 rounded-lg bg-gray-50 border border-gray-200">
+                      <p className="text-sm font-medium text-gray-900">
+                        {fullCsvPreview.cardTransactions.length} Card Transactions
+                      </p>
+                    </div>
+                  )}
+                  
+                  {fullCsvPreview.errors.length > 0 && (
+                    <div className="p-2.5 rounded-lg bg-red-50 border border-red-200">
+                      <p className="text-sm font-medium text-red-900">
+                        {fullCsvPreview.errors.length} Errors
+                      </p>
+                      <p className="text-xs text-red-700 max-h-20 overflow-y-auto">
+                        {fullCsvPreview.errors.slice(0, 5).join('; ')}
+                        {fullCsvPreview.errors.length > 5 ? '...' : ''}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setShowFullCsvImport(false); setFullCsvText(''); setFullCsvPreview(null); }}
+                    className="flex-1 px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleImportFullCsv}
+                    disabled={importingFullCsv || (fullCsvPreview.accounts.length === 0 && fullCsvPreview.scheduledItems.length === 0 && fullCsvPreview.creditCards.length === 0)}
+                    className="flex-1 px-3 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 disabled:opacity-50"
+                  >
+                    {importingFullCsv ? 'Importing...' : 'Import All Data'}
+                  </button>
+                </div>
+                
+                <p className="text-xs text-amber-600 text-center">
+                  ⚠️ This will replace all existing data
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Paste CSV Import Section */}

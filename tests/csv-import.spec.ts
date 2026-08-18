@@ -27,7 +27,7 @@ test('CSV import does not crash', async ({ page }) => {
   await page.waitForTimeout(500);
 
   // Find the import button and trigger file chooser
-  const importBtn = page.locator('button:has-text("Import / Restore")');
+  const importBtn = page.locator('button:has-text("Restore from JSON Backup")');
   await expect(importBtn).toBeVisible();
 
   const [fileChooser] = await Promise.all([
