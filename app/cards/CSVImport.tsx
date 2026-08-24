@@ -66,8 +66,9 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
 
       await bulkAddCards(cards);
       handleClose();
-    } catch {
-      // Handle error silently — user can retry
+    } catch (err) {
+      console.error('Import failed:', err);
+      alert(`Import failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setImporting(false);
     }

@@ -282,7 +282,7 @@ export async function deleteCreditCard(id: string): Promise<void> {
 
 export async function bulkAddCreditCards(cards: CreditCard[]): Promise<void> {
   const db = getDB();
-  await db.creditCards.bulkAdd(cards);
+  await db.creditCards.bulkPut(cards);
 }
 
 // ---- Wishlist Items ----
