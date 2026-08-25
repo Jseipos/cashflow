@@ -43,14 +43,16 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
   };
 
   const handleImport = async () => {
+    console.log('handleImport called, rows:', rows.length);
     const validRows = rows.filter((r) => r.valid);
+    console.log('validRows:', validRows.length);
     if (validRows.length === 0) return;
 
     setImporting(true);
     try {
       const now = new Date();
       const cards: CreditCard[] = validRows.map((row, i) => ({
-        id: crypto.randomUUID(),
+        id: generateId(),
         name: row.name,
         balance: row.balance,
         apr: row.apr,
@@ -63,8 +65,10 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
         createdAt: now,
         updatedAt: now,
       }));
+      console.log('cards to import:', cards);
 
       await bulkAddCards(cards);
+      console.log('bulkAddCards completed');
       handleClose();
     } catch (err) {
       console.error('Import failed:', err);
@@ -309,4 +313,15 @@ function parseCardCSV(text: string): ParsedRow[] {
   }
 
   return rows;
+}
+
+/**
+ * Generate a unique ID, with fallback for environments without crypto.randomUUID
+ */
+function generateId(): string {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Fallback: timestamp + random string
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 }
