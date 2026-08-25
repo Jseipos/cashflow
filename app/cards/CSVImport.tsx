@@ -151,6 +151,7 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
               </div>
 
               <button
+                type="button"
                 onClick={handleParse}
                 disabled={!pasteText.trim()}
                 className="w-full px-4 py-2.5 rounded-lg bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700 transition-colors disabled:opacity-50"
@@ -171,6 +172,7 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
                   {rows.filter((r) => r.valid).length} of {rows.length} rows ready to import
                 </p>
                 <button
+                  type="button"
                   onClick={() => { setStep('paste'); setRows([]); }}
                   className="text-sm text-blue-600 hover:underline"
                 >
@@ -210,6 +212,7 @@ export function CSVImport({ open, onClose }: CSVImportProps) {
                   Cancel
                 </button>
                 <button
+                  type="button"
                   onClick={handleImport}
                   disabled={importing || rows.filter((r) => r.valid).length === 0}
                   className="flex-1 px-4 py-2.5 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50"
